@@ -106,9 +106,12 @@ struct CaptionTrack: Identifiable, Hashable, Sendable {
 
 struct StreamInfo: Sendable {
     let videoId: String
-    /// HLS manifest, or a progressive MP4 when no HLS was offered.
-    let hlsURL: URL
+    /// HLS manifest, a progressive MP4, or the video track when `audioURL` is set.
+    var hlsURL: URL
     var isHLS = true
+    /// Separate audio track (DASH-style adaptive pair, combined with AVMutableComposition).
+    var audioURL: URL?
+    var videoHeight = 0
     var userAgent = ITClient.iosUserAgent
     var source = "?"
     var poToken: String?

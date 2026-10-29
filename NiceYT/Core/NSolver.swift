@@ -11,30 +11,53 @@ actor NSolver {
     private var playerId: String?
     private var preprocessed: String?
     private var cache: [String: String] = [:]
+    private var sigCache: [String: String] = [:]
+    private var sts: Int?
 
-    /// Returns a mapping unsolved → solved for all given challenges (missing entries failed).
+    /// Returns a mapping unsolved → solved for all given n challenges (missing entries failed).
     func solve(_ challenges: [String]) async -> [String: String] {
-        let wanted = Array(Set(challenges)).filter { cache[$0] == nil }
-        if !wanted.isEmpty {
-            await solveUncached(wanted)
-        }
-        var out: [String: String] = [:]
-        for c in challenges { if let s = cache[c] { out[c] = s } }
-        return out
+        await solve(n: challenges, sig: []).n
     }
 
-    private func solveUncached(_ challenges: [String]) async {
+    func solve(n: [String], sig: [String]) async -> (n: [String: String], sig: [String: String]) {
+        let wantedN = Array(Set(n)).filter { cache[$0] == nil }
+        let wantedSig = Array(Set(sig)).filter { sigCache[$0] == nil }
+        if !wantedN.isEmpty || !wantedSig.isEmpty {
+            await solveUncached(n: wantedN, sig: wantedSig)
+        }
+        var outN: [String: String] = [:]
+        var outSig: [String: String] = [:]
+        for c in n { if let v = cache[c] { outN[c] = v } }
+        for c in sig { if let v = sigCache[c] { outSig[c] = v } }
+        return (outN, outSig)
+    }
+
+    /// `signatureTimestamp` of the current player, required by clients that use signatures.
+    func signatureTimestamp() async -> Int? {
+        if let sts { return sts }
+        _ = await loadPlayerJS() // stores sts as a side effect
+        return sts
+    }
+
+    private var playerJS: String?
+
+    private func solveUncached(n: [String], sig: [String]) async {
         guard let ctx = makeContext() else {
             DebugLog.log("[n] Solver-Skripte fehlen im Bundle")
             return
         }
         let start = Date()
-        var request: [String: Any] = ["requests": [["type": "n", "challenges": challenges]]]
+        var requests: [[String: Any]] = []
+        if !n.isEmpty { requests.append(["type": "n", "challenges": n]) }
+        if !sig.isEmpty { requests.append(["type": "sig", "challenges": sig]) }
+        var request: [String: Any] = ["requests": requests]
         if let preprocessed {
             request["type"] = "preprocessed"
             request["preprocessed_player"] = preprocessed
         } else {
-            guard let js = await loadPlayerJS() else {
+            var loaded = playerJS
+            if loaded == nil { loaded = await loadPlayerJS() }
+            guard let js = loaded else {
                 DebugLog.log("[n] Player-JS konnte nicht geladen werden")
                 return
             }
@@ -50,24 +73,28 @@ actor NSolver {
             return
         }
         let j = JSON(data: data)
-        if let pre = j["preprocessed_player"].string { preprocessed = pre }
+        if let pre = j["preprocessed_player"].string {
+            preprocessed = pre
+            playerJS = nil
+        }
         guard j["type"].string == "result" else {
-            DebugLog.log("[n] Solver-Fehler: \(j["error"].string ?? text.prefix(200).description)")
+            DebugLog.log("[n] Solver-Fehler: \(j["error"].string ?? String(text.prefix(200)))")
             preprocessed = nil
             return
         }
-        for response in j["responses"].array {
+        for (i, response) in j["responses"].array.enumerated() {
             guard response["type"].string == "result" else {
-                DebugLog.log("[n] Challenge-Fehler: \(response["error"].string?.prefix(200) ?? "?")")
+                DebugLog.log("[n] Challenge-Fehler: \(String(response["error"].string?.prefix(200) ?? "?"))")
                 continue
             }
-            for c in challenges {
-                if let solved = response["data"][c].string, !solved.isEmpty, solved != c {
-                    cache[c] = solved
-                }
+            let type = (requests.indices.contains(i) ? requests[i]["type"] as? String : nil) ?? "n"
+            let list = type == "sig" ? sig : n
+            for c in list {
+                guard let solved = response["data"][c].string, !solved.isEmpty else { continue }
+                if type == "sig" { sigCache[c] = solved } else if solved != c { cache[c] = solved }
             }
         }
-        DebugLog.log("[n] \(cache.count) gelöst in \(Int(Date().timeIntervalSince(start) * 1000)) ms (Player \(playerId ?? "?"))")
+        DebugLog.log("[n] gelöst: n \(n.filter { cache[$0] != nil }.count)/\(n.count), sig \(sig.filter { sigCache[$0] != nil }.count)/\(sig.count) in \(Int(Date().timeIntervalSince(start) * 1000)) ms (Player \(playerId ?? "?"))")
     }
 
     private func makeContext() -> JSContext? {
@@ -113,8 +140,13 @@ actor NSolver {
         req.setValue(ITClient.webUserAgent, forHTTPHeaderField: "User-Agent")
         guard let (data, response) = try? await session.data(for: req),
               (response as? HTTPURLResponse)?.statusCode == 200 else { return nil }
-        DebugLog.log("[n] Player \(pid) geladen (\(data.count / 1024) KB)")
-        return String(data: data, encoding: .utf8)
+        guard let js = String(data: data, encoding: .utf8) else { return nil }
+        if let r = js.range(of: #"(?:signatureTimestamp|sts)\s*:\s*[0-9]{5}"#, options: .regularExpression) {
+            sts = Int(js[r].filter(\.isNumber).suffix(5))
+        }
+        playerJS = js
+        DebugLog.log("[n] Player \(pid) geladen (\(data.count / 1024) KB, sts \(sts.map(String.init) ?? "?"))")
+        return js
     }
 
     /// Finds `/n/<value>/` path segments and `n=<value>` query parameters.

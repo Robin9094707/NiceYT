@@ -62,7 +62,7 @@ final class CookieJar: @unchecked Sendable {
 
 /// InnerTube client identities. Player clients mirror yt-dlp (2026.10).
 enum ITClient {
-    case web, ios, visionos, webSafari, mweb
+    case web, ios, visionos, webSafari, mweb, tv, webEmbedded
 
     static let webVersion = "2.20260708.00.00"
     static let iosVersion = "21.26.4"
@@ -77,6 +77,8 @@ enum ITClient {
         case .ios: return "IOS"
         case .visionos: return "VISIONOS"
         case .mweb: return "MWEB"
+        case .tv: return "TVHTML5"
+        case .webEmbedded: return "WEB_EMBEDDED_PLAYER"
         }
     }
 
@@ -86,15 +88,18 @@ enum ITClient {
         case .ios: return "5"
         case .visionos: return "101"
         case .mweb: return "2"
+        case .tv: return "7"
+        case .webEmbedded: return "56"
         }
     }
 
     var version: String {
         switch self {
-        case .web, .webSafari: return Self.webVersion
+        case .web, .webSafari, .webEmbedded: return Self.webVersion
         case .ios: return Self.iosVersion
         case .visionos: return "1.02"
         case .mweb: return "2.20260708.05.00"
+        case .tv: return "5.20260707"
         }
     }
 
@@ -103,20 +108,25 @@ enum ITClient {
         case .web: return Self.webUserAgent
         case .ios: return Self.iosUserAgent
         case .visionos: return "Mozilla/5.0 (Macintosh; Intel Mac OS X 15_7_3) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/26.0 Safari/605.1.15"
-        case .webSafari: return "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/15.5 Safari/605.1.15,gzip(gfe)"
+        case .webSafari, .webEmbedded: return "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/15.5 Safari/605.1.15,gzip(gfe)"
+        case .tv: return "Mozilla/5.0 (SMART-TV; Linux; Tizen 2.4.0) AppleWebKit/538.1 (KHTML, like Gecko) Version/2.4.0 TV Safari/538.1"
         case .mweb: return "Mozilla/5.0 (iPad; CPU OS 16_7_10 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.6 Mobile/15E148 Safari/604.1,gzip(gfe)"
         }
     }
 
     /// Web-based clients accept the signed-in cookie session.
-    var supportsCookies: Bool { self == .web || self == .webSafari || self == .mweb }
+    var supportsCookies: Bool { self == .web || self == .webSafari || self == .mweb || self == .tv || self == .webEmbedded }
+
+    /// Clients whose stream URLs carry an encrypted signature / n value (need the JS player).
+    var needsJSPlayer: Bool { self == .tv || self == .webEmbedded || self == .web || self == .webSafari || self == .mweb }
 
     var extraContext: [String: Any] {
         switch self {
         case .web: return ["platform": "DESKTOP"]
         case .ios: return ["deviceMake": "Apple", "deviceModel": Self.iosDevice, "osName": "iPhone", "osVersion": "18.3.2.22D82"]
         case .visionos: return ["deviceMake": "Apple", "deviceModel": "RealityDevice17,1", "osName": "visionOS", "osVersion": "26.5.23O471"]
-        case .webSafari, .mweb: return [:]
+        case .tv: return ["deviceMake": "Samsung", "deviceModel": "UKS9800", "osName": "Tizen", "osVersion": "2.4.0"]
+        case .webSafari, .mweb, .webEmbedded: return [:]
         }
     }
 }
@@ -152,15 +162,16 @@ final class InnerTube: @unchecked Sendable {
         ]
         for (k, v) in client.extraContext { c[k] = v }
         if includeVisitor, let v = visitorData { c["visitorData"] = v }
-        return ["client": c, "user": ["lockedSafetyMode": false], "request": ["useSsl": true]]
+        var ctx: [String: Any] = ["client": c, "user": ["lockedSafetyMode": false], "request": ["useSsl": true]]
+        if client == .webEmbedded { ctx["thirdParty"] = ["embedUrl": "https://www.reddit.com/"] }
+        return ctx
     }
 
     /// POST to `youtubei/v1/<endpoint>`.
     func post(_ endpoint: String, _ body: [String: Any], client: ITClient = .web, authenticated: Bool = true) async throws -> JSON {
         var payload = body
-        // App clients get a clean context; mixing in the web session's visitor id can make
-        // YouTube withhold stream URLs.
-        let sendVisitor = client.supportsCookies
+        // visionOS/TV need the visitor id (otherwise "confirm you're not a bot").
+        let sendVisitor = client != .ios
         payload["context"] = context(client, includeVisitor: sendVisitor)
 
         var request = URLRequest(url: URL(string: "\(Self.origin)/youtubei/v1/\(endpoint)?prettyPrint=false")!)

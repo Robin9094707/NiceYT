@@ -430,14 +430,10 @@ enum Parser {
         var url: URL
         if let hls = j.at("streamingData.hlsManifestUrl").string, let u = URL(string: hls) {
             url = u
-        } else if let muxed = j.at("streamingData.formats").array
-                    .filter({ $0["url"].string != nil })
-                    .max(by: { ($0["height"].int ?? 0) < ($1["height"].int ?? 0) }),
-                  let u = URL(string: muxed["url"].string!) {
-            url = u
-            isHLS = false
         } else {
-            throw YTError.unplayable("Kein Stream verfügbar.")
+            // Direct formats are resolved (and deciphered) by YouTube.streamCandidates.
+            url = URL(string: "about:blank")!
+            isHLS = false
         }
         let vd = j["videoDetails"]
         let captions = j.at("captions.playerCaptionsTracklistRenderer.captionTracks").array.compactMap { t -> CaptionTrack? in
@@ -460,6 +456,38 @@ enum Parser {
                           description: vd["shortDescription"].string ?? "",
                           isLive: vd["isLive"].bool ?? false,
                           captions: captions)
+    }
+
+    struct RawFormat {
+        let itag: Int
+        let url: String?
+        let cipher: (s: String, sp: String, url: String)?
+        let mime: String
+        let height: Int
+        let bitrate: Int
+        let isMuxed: Bool
+
+        var isVideo: Bool { mime.hasPrefix("video/") }
+        var isAudio: Bool { mime.hasPrefix("audio/") }
+    }
+
+    static func rawFormats(_ j: JSON) -> [RawFormat] {
+        func parse(_ f: JSON, muxed: Bool) -> RawFormat? {
+            guard let itag = f["itag"].int, let mime = f["mimeType"].string else { return nil }
+            var cipher: (String, String, String)?
+            if let sc = f["signatureCipher"].string ?? f["cipher"].string,
+               let items = URLComponents(string: "?" + sc)?.queryItems {
+                let dict = Dictionary(items.map { ($0.name, $0.value ?? "") }, uniquingKeysWith: { a, _ in a })
+                if let s = dict["s"], let u = dict["url"] { cipher = (s, dict["sp"] ?? "signature", u) }
+            }
+            let url = f["url"].string
+            guard url != nil || cipher != nil else { return nil }
+            return RawFormat(itag: itag, url: url, cipher: cipher, mime: mime,
+                             height: f["height"].int ?? 0, bitrate: f["bitrate"].int ?? 0, isMuxed: muxed)
+        }
+        let sd = j["streamingData"]
+        return sd["formats"].array.compactMap { parse($0, muxed: true) }
+            + sd["adaptiveFormats"].array.compactMap { parse($0, muxed: false) }
     }
 
     // MARK: Subscriptions list

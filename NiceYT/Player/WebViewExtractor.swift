@@ -14,7 +14,7 @@ final class WebViewExtractor: NSObject, WKScriptMessageHandler, WKNavigationDele
     private var currentId: String?
     private var timeout: Task<Void, Never>?
 
-    func extract(_ videoId: String, timeoutSeconds: Double = 25) async -> StreamInfo? {
+    func extract(_ videoId: String, timeoutSeconds: Double = 15) async -> StreamInfo? {
         finish(nil)
         currentId = videoId
         let wv = webView ?? makeWebView()

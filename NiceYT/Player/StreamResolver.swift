@@ -4,7 +4,7 @@ import Foundation
 /// A stream that passed the pre-flight checks and is ready to hand to AVPlayer.
 struct PreparedStream {
     let info: StreamInfo
-    let asset: AVURLAsset
+    let asset: AVAsset
     let label: String
     /// Keeps the resource-loader delegate alive (AVAssetResourceLoader holds it weakly).
     let proxy: HLSProxy?
@@ -57,6 +57,10 @@ enum StreamResolver {
         let label = info.source
         let hdrs = headers(for: info)
 
+        if !info.isHLS, let audioURL = info.audioURL {
+            return await prepareAdaptive(info, audioURL: audioURL, headers: hdrs)
+        }
+
         if !info.isHLS {
             var url = info.hlsURL
             let challenges = NSolver.challenges(in: url.absoluteString)
@@ -68,7 +72,7 @@ enum StreamResolver {
             DebugLog.log("[\(label)] MP4-Probe HTTP \(status)")
             guard (200..<300).contains(status) else { return nil }
             let asset = AVURLAsset(url: url, options: ["AVURLAssetHTTPHeaderFieldsKey": hdrs])
-            return PreparedStream(info: info, asset: asset, label: label + " (MP4)", proxy: nil)
+            return PreparedStream(info: info, asset: asset, label: label, proxy: nil)
         }
 
         // 1. Master manifest
@@ -122,6 +126,44 @@ enum StreamResolver {
         }
         let asset = AVURLAsset(url: info.hlsURL, options: ["AVURLAssetHTTPHeaderFieldsKey": hdrs])
         return PreparedStream(info: info, asset: asset, label: label, proxy: nil)
+    }
+
+    /// Separate video + audio streams (like DASH) combined into one composition.
+    private static func prepareAdaptive(_ info: StreamInfo, audioURL: URL, headers hdrs: [String: String]) async -> PreparedStream? {
+        let label = info.source
+        async let videoProbe = get(info.hlsURL, headers: hdrs, range: true)
+        async let audioProbe = get(audioURL, headers: hdrs, range: true)
+        let (vStatus, _) = await videoProbe
+        let (aStatus, _) = await audioProbe
+        DebugLog.log("[\(label)] Video-Probe HTTP \(vStatus), Audio-Probe HTTP \(aStatus)")
+        guard (200..<300).contains(vStatus), (200..<300).contains(aStatus) else { return nil }
+
+        let options = ["AVURLAssetHTTPHeaderFieldsKey": hdrs]
+        let videoAsset = AVURLAsset(url: info.hlsURL, options: options)
+        let audioAsset = AVURLAsset(url: audioURL, options: options)
+        do {
+            guard let vt = try await videoAsset.loadTracks(withMediaType: .video).first,
+                  let at = try await audioAsset.loadTracks(withMediaType: .audio).first else {
+                DebugLog.log("[\(label)] Keine Spuren gefunden")
+                return nil
+            }
+            let vRange = try await vt.load(.timeRange)
+            let aRange = try await at.load(.timeRange)
+            let composition = AVMutableComposition()
+            guard let cv = composition.addMutableTrack(withMediaType: .video, preferredTrackID: kCMPersistentTrackID_Invalid),
+                  let ca = composition.addMutableTrack(withMediaType: .audio, preferredTrackID: kCMPersistentTrackID_Invalid) else {
+                return nil
+            }
+            try cv.insertTimeRange(vRange, of: vt, at: .zero)
+            cv.preferredTransform = try await vt.load(.preferredTransform)
+            let audioDuration = CMTimeMinimum(aRange.duration, vRange.duration)
+            try ca.insertTimeRange(CMTimeRange(start: aRange.start, duration: audioDuration), of: at, at: .zero)
+            DebugLog.log("[\(label)] Komposition bereit (\(Int(vRange.duration.seconds)) s)")
+            return PreparedStream(info: info, asset: composition, label: label, proxy: nil)
+        } catch {
+            DebugLog.log("[\(label)] Komposition fehlgeschlagen: \(error.localizedDescription)")
+            return nil
+        }
     }
 
     private static func resolve(_ line: String, base: URL) -> URL? {

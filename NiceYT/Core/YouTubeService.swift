@@ -85,41 +85,110 @@ enum YouTube {
 
     // MARK: Watch
 
-    /// Queries several player clients in parallel (order follows yt-dlp's current
-    /// JS-less defaults) and returns every usable stream, HLS first.
+    /// Queries several player clients in parallel (order follows yt-dlp 2026.10: visionOS,
+    /// TV, embedded web) and returns every usable stream: HLS first, then adaptive
+    /// video+audio pairs, then progressive MP4.
     static func streamCandidates(_ videoId: String) async -> [StreamInfo] {
-        let body: [String: Any] = [
-            "videoId": videoId,
-            "contentCheckOk": true,
-            "racyCheckOk": true,
-            "playbackContext": ["contentPlaybackContext": ["html5Preference": "HTML5_PREF_WANTS"]]
-        ]
-        var clients: [ITClient] = [.visionos, .ios]
+        let sts = await NSolver.shared.signatureTimestamp()
+        var clients: [ITClient] = [.visionos, .tv, .webEmbedded, .ios]
         if CookieJar.shared.isSignedIn { clients.append(.webSafari) }
         clients.append(.mweb)
 
-        let results = await withTaskGroup(of: (Int, StreamInfo?).self) { group in
+        let results = await withTaskGroup(of: (Int, [StreamInfo]).self) { group in
             for (index, client) in clients.enumerated() {
                 group.addTask {
+                    var playback: [String: Any] = ["html5Preference": "HTML5_PREF_WANTS"]
+                    if client.needsJSPlayer, let sts { playback["signatureTimestamp"] = sts }
+                    let body: [String: Any] = [
+                        "videoId": videoId,
+                        "contentCheckOk": true,
+                        "racyCheckOk": true,
+                        "playbackContext": ["contentPlaybackContext": playback]
+                    ]
                     do {
                         let j = try await api.post("player", body, client: client, authenticated: client.supportsCookies)
                         let status = j.at("playabilityStatus.status").string ?? "?"
                         let sd = j["streamingData"]
                         let formats = sd["formats"].array.count + sd["adaptiveFormats"].array.count
-                        DebugLog.log("[\(client.name)] Status \(status), HLS \(sd["hlsManifestUrl"].exists ? "ja" : "nein"), Formate \(formats), SABR \(sd["serverAbrStreamingUrl"].exists ? "ja" : "nein")\(status == "OK" ? "" : " – " + (j.at("playabilityStatus.reason").string ?? ""))")
-                        return (index, try Parser.stream(j, videoId: videoId, client: client))
+                        let reason = status == "OK" ? "" : " – " + (j.at("playabilityStatus.reason").string ?? "")
+                        DebugLog.log("[\(client.name)] Status \(status), HLS \(sd["hlsManifestUrl"].exists ? "ja" : "nein"), Formate \(formats)\(reason)")
+                        let meta = try Parser.stream(j, videoId: videoId, client: client)
+                        return (index, await candidates(from: j, meta: meta, client: client))
                     } catch {
                         DebugLog.log("[\(client.name)] Fehler: \(error.localizedDescription)")
-                        return (index, nil)
+                        return (index, [])
                     }
                 }
             }
-            var collected: [(Int, StreamInfo?)] = []
+            var collected: [(Int, [StreamInfo])] = []
             for await r in group { collected.append(r) }
             return collected
         }
-        let ordered = results.sorted { $0.0 < $1.0 }.compactMap { $0.1 }
-        return ordered.filter(\.isHLS) + ordered.filter { !$0.isHLS }
+        let ordered = results.sorted { $0.0 < $1.0 }.flatMap { $0.1 }
+        return ordered.filter(\.isHLS)
+            + ordered.filter { !$0.isHLS && $0.audioURL != nil }
+            + ordered.filter { !$0.isHLS && $0.audioURL == nil }
+    }
+
+    /// Builds playable variants from one player response, deciphering signatures and n values.
+    private static func candidates(from j: JSON, meta: StreamInfo, client: ITClient) async -> [StreamInfo] {
+        var out: [StreamInfo] = []
+        if meta.isHLS { out.append(meta) }
+        // iOS / mobile-web direct URLs require a PO token nowadays (HTTP 403 without).
+        guard client == .tv || client == .webEmbedded || client == .visionos else { return out }
+
+        let formats = Parser.rawFormats(j)
+        let maxHeight = AppSettings.shared.quality == .auto ? 1080 : min(Int(AppSettings.shared.quality.rawValue) ?? 1080, 1080)
+        let video = formats
+            .filter { !$0.isMuxed && $0.mime.hasPrefix("video/mp4") && $0.mime.contains("avc1") && $0.height <= maxHeight }
+            .max { ($0.height, $0.bitrate) < ($1.height, $1.bitrate) }
+        let audio = formats
+            .filter { !$0.isMuxed && $0.mime.hasPrefix("audio/mp4") }
+            .max { $0.bitrate < $1.bitrate }
+        let muxed = formats.filter { $0.isMuxed && $0.mime.hasPrefix("video/mp4") }.max { $0.height < $1.height }
+
+        let chosen = [video, audio, muxed].compactMap { $0 }
+        guard !chosen.isEmpty else { return out }
+        let sigs = chosen.compactMap { $0.cipher?.s }
+        var raw = chosen.compactMap { $0.url ?? $0.cipher?.url }
+        let nChallenges = raw.flatMap { NSolver.challenges(in: $0) }
+        raw.removeAll()
+        let solved = await NSolver.shared.solve(n: nChallenges, sig: sigs)
+
+        func finalURL(_ f: Parser.RawFormat) -> URL? {
+            var u: String
+            if let url = f.url {
+                u = url
+            } else if let c = f.cipher, let sig = solved.sig[c.s] {
+                var allowed = CharacterSet.urlQueryAllowed
+                allowed.remove(charactersIn: "&=+/")
+                u = c.url + "&" + c.sp + "=" + (sig.addingPercentEncoding(withAllowedCharacters: allowed) ?? sig)
+            } else {
+                return nil
+            }
+            u = NSolver.apply(solved.n, to: u)
+            return URL(string: u)
+        }
+
+        if let video, let audio, let v = finalURL(video), let a = finalURL(audio) {
+            var s = meta
+            s.isHLS = false
+            s.hlsURL = v
+            s.audioURL = a
+            s.videoHeight = video.height
+            s.source = "\(client.name) \(video.height)p"
+            out.append(s)
+        }
+        if let muxed, let m = finalURL(muxed) {
+            var s = meta
+            s.isHLS = false
+            s.hlsURL = m
+            s.audioURL = nil
+            s.videoHeight = muxed.height
+            s.source = "\(client.name) \(muxed.height)p MP4"
+            out.append(s)
+        }
+        return out
     }
 
     /// Metadata-only player response (title, captions …) from the first answering client.
