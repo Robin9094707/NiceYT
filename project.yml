@@ -18,6 +18,9 @@ targets:
       - path: NiceYT
         excludes:
           - "Info.plist"
+          - "Resources/Solver/**"
+      - path: NiceYT/Resources/Solver
+        buildPhase: resources
     info:
       path: NiceYT/Info.plist
       properties:

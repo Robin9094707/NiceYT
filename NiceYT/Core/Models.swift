@@ -110,6 +110,8 @@ struct StreamInfo: Sendable {
     let hlsURL: URL
     var isHLS = true
     var userAgent = ITClient.iosUserAgent
+    var source = "?"
+    var poToken: String?
     let title: String
     let author: String
     let channelId: String?

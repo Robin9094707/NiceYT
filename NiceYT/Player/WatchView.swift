@@ -208,6 +208,9 @@ struct WatchView: View {
                         } label: { pill(player.captionTrack == nil ? "Untertitel" : player.captionTrack!.languageCode.uppercased(),
                                         player.captionTrack == nil ? "captions.bubble" : "captions.bubble.fill") }
                     }
+                    if let source = player.sourceLabel {
+                        pill(source, "antenna.radiowaves.left.and.right")
+                    }
                     if !player.segments.isEmpty {
                         pill("\(player.segments.count) SponsorBlock", "forward.end.circle")
                     }

@@ -81,6 +81,18 @@ struct SettingsView: View {
                     Text("Bestimmt Sprache und Region der Empfehlungen, z. B. de / DE.")
                 }
 
+                Section {
+                    NavigationLink {
+                        DiagnosticsView()
+                    } label: {
+                        Label("Diagnose & Protokoll", systemImage: "stethoscope")
+                    }
+                } header: {
+                    Text("Hilfe")
+                } footer: {
+                    Text("Zeigt, welche Stream-Quelle funktioniert oder warum ein Video nicht startet. Über „Senden“ kannst du das Protokoll weitergeben.")
+                }
+
                 Section("Speicher") {
                     Button("Bild-Cache leeren", systemImage: "trash") {
                         URLCache.shared.removeAllCachedResponses()

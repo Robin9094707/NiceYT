@@ -22,6 +22,7 @@ final class ShortsModel: ObservableObject {
     private var loadingMore = false
     private var active = false
     private var loopObservers: [String: AnyCancellable] = [:]
+    private var proxies: [String: HLSProxy] = [:]
 
     // MARK: Feed
 
@@ -108,6 +109,7 @@ final class ShortsModel: ObservableObject {
             players[key]?.pause()
             players[key] = nil
             loopObservers[key] = nil
+            proxies[key] = nil
         }
     }
 
@@ -127,23 +129,24 @@ final class ShortsModel: ObservableObject {
                 player.play()
             }
         Task {
-            do {
-                let s = try await YouTube.stream(id)
-                streams[id] = s
-                if let i = items.firstIndex(where: { $0.id == id }) {
-                    var v = items[i].video
-                    if v.title.isEmpty { v.title = s.title }
-                    v.channelName = s.author
-                    v.channelId = s.channelId
-                    if let views = Int(s.viewCount ?? "") { v.views = views.compact + " Aufrufe" }
-                    items[i].video = v
-                }
-                let asset = AVURLAsset(url: s.hlsURL, options: ["AVURLAssetHTTPHeaderFieldsKey": ["User-Agent": s.userAgent]])
-                player.replaceCurrentItem(with: AVPlayerItem(asset: asset))
-                if active, currentID == id, !paused { player.play() }
-            } catch {
-                if currentID == id { self.error = error.localizedDescription }
+            let prepared = await StreamResolver.firstPlayable(id) { _ in true }
+            guard let prepared else {
+                if currentID == id { self.error = "Short konnte nicht geladen werden (Diagnose in den Einstellungen)." }
+                return
             }
+            let s = prepared.info
+            streams[id] = s
+            proxies[id] = prepared.proxy
+            if let i = items.firstIndex(where: { $0.id == id }) {
+                var v = items[i].video
+                if v.title.isEmpty { v.title = s.title }
+                if !s.author.isEmpty { v.channelName = s.author }
+                if let c = s.channelId { v.channelId = c }
+                if let views = Int(s.viewCount ?? "") { v.views = views.compact + " Aufrufe" }
+                items[i].video = v
+            }
+            player.replaceCurrentItem(with: AVPlayerItem(asset: prepared.asset))
+            if active, currentID == id, !paused { player.play() }
         }
     }
 }

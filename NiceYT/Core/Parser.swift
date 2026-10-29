@@ -451,6 +451,7 @@ enum Parser {
                           hlsURL: url,
                           isHLS: isHLS,
                           userAgent: client.userAgent,
+                          source: client.name,
                           title: vd["title"].string ?? "",
                           author: vd["author"].string ?? "",
                           channelId: vd["channelId"].string,

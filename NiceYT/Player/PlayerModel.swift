@@ -30,6 +30,7 @@ final class PlayerModel: NSObject, ObservableObject {
     @Published private(set) var captionTrack: CaptionTrack?
     @Published private(set) var currentCaption: String?
     @Published private(set) var quality: VideoQuality = AppSettings.shared.quality
+    @Published private(set) var sourceLabel: String?
 
     let player = AVPlayer()
     private let settings = AppSettings.shared
@@ -41,6 +42,7 @@ final class PlayerModel: NSObject, ObservableObject {
     private var watchedMarked = false
     private var artwork: MPMediaItemArtwork?
     private var toastTask: Task<Void, Never>?
+    private var activeProxy: HLSProxy?
 
     override init() {
         super.init()
@@ -65,6 +67,23 @@ final class PlayerModel: NSObject, ObservableObject {
             .sink { [weak self] note in
                 guard let self, (note.object as? AVPlayerItem) === self.player.currentItem else { return }
                 self.didFinish()
+            }
+            .store(in: &cancellables)
+
+        NotificationCenter.default.publisher(for: AVPlayerItem.newErrorLogEntryNotification)
+            .receive(on: RunLoop.main)
+            .sink { [weak self] note in
+                guard let item = note.object as? AVPlayerItem, item === self?.player.currentItem,
+                      let event = item.errorLog()?.events.last else { return }
+                DebugLog.log("⚠︎ Wiedergabe: \(event.errorStatusCode) \(event.errorComment ?? "") \(DebugLog.short(event.uri.flatMap(URL.init(string:))))")
+            }
+            .store(in: &cancellables)
+
+        NotificationCenter.default.publisher(for: AVPlayerItem.failedToPlayToEndTimeNotification)
+            .receive(on: RunLoop.main)
+            .sink { note in
+                let e = note.userInfo?[AVPlayerItemFailedToPlayToEndTimeErrorKey] as? NSError
+                DebugLog.log("✖︎ Abbruch: \(e?.domain ?? "") \(e?.code ?? 0) \(e?.localizedDescription ?? "")")
             }
             .store(in: &cancellables)
 
@@ -107,6 +126,7 @@ final class PlayerModel: NSObject, ObservableObject {
         likeStatus = nil
         isSubscribed = false
         quality = settings.quality
+        sourceLabel = nil
         if present { isPresented = true }
         player.replaceCurrentItem(with: nil)
         loadTask = Task { await load(video) }
@@ -124,29 +144,26 @@ final class PlayerModel: NSObject, ObservableObject {
         let id = video.id
         let detailsTask = Task { try? await YouTube.watch(id) }
 
-        do {
-            let s = try await YouTube.stream(id)
-            guard !Task.isCancelled, current?.id == id else { return }
+        let prepared = await StreamResolver.firstPlayable(id) { candidate in
+            guard !Task.isCancelled, self.current?.id == id else { return false }
+            return await self.tryPlay(candidate)
+        }
+        guard !Task.isCancelled, current?.id == id else { return }
+        if let prepared {
+            let s = prepared.info
             stream = s
+            sourceLabel = prepared.label
             if var v = current {
                 if v.title.isEmpty { v.title = s.title }
-                if v.channelName == nil { v.channelName = s.author }
+                if v.channelName == nil, !s.author.isEmpty { v.channelName = s.author }
                 if v.channelId == nil { v.channelId = s.channelId }
                 current = v
             }
-            let asset = AVURLAsset(url: s.hlsURL, options: ["AVURLAssetHTTPHeaderFieldsKey": ["User-Agent": s.userAgent]])
-            let item = AVPlayerItem(asset: asset)
-            item.preferredForwardBufferDuration = 0
-            apply(quality, to: item)
-            item.externalMetadata = metadataItems(title: s.title, artist: s.author)
-            player.replaceCurrentItem(with: item)
-            player.play()
             isLoading = false
             updateNowPlaying()
             Task { await loadArtwork(for: video) }
-        } catch {
-            guard current?.id == id else { return }
-            self.error = error.localizedDescription
+        } else {
+            error = "Wiedergabe fehlgeschlagen. Details unter Einstellungen → Diagnose."
             isLoading = false
         }
 
@@ -185,6 +202,42 @@ final class PlayerModel: NSObject, ObservableObject {
         let existing = Set(details?.related.map(\.id) ?? [])
         details?.related += page.items.filter { !existing.contains($0.id) }
         details?.relatedContinuation = page.continuation
+    }
+
+    /// Hands a candidate to AVPlayer and waits until it is really playable.
+    private func tryPlay(_ candidate: PreparedStream) async -> Bool {
+        let item = AVPlayerItem(asset: candidate.asset)
+        item.preferredForwardBufferDuration = 0
+        apply(quality, to: item)
+        item.externalMetadata = metadataItems(title: candidate.info.title, artist: candidate.info.author)
+        activeProxy = candidate.proxy
+        player.replaceCurrentItem(with: item)
+        player.play()
+        let start = Date()
+        while Date().timeIntervalSince(start) < 15 {
+            if Task.isCancelled { return false }
+            switch item.status {
+            case .readyToPlay:
+                DebugLog.log("✔︎ Wiedergabe über \(candidate.label) nach \(Int(Date().timeIntervalSince(start) * 1000)) ms")
+                return true
+            case .failed:
+                let e = item.error as NSError?
+                DebugLog.log("✖︎ \(candidate.label): AVPlayer-Fehler \(e?.domain ?? "") \(e?.code ?? 0) – \(e?.localizedDescription ?? "")")
+                logErrorEvents(item)
+                return false
+            default:
+                try? await Task.sleep(for: .milliseconds(200))
+            }
+        }
+        DebugLog.log("✖︎ \(candidate.label): Zeitüberschreitung beim Laden")
+        logErrorEvents(item)
+        return false
+    }
+
+    private func logErrorEvents(_ item: AVPlayerItem) {
+        for event in item.errorLog()?.events.suffix(4) ?? [] {
+            DebugLog.log("   ErrorLog \(event.errorStatusCode) \(event.errorDomain): \(event.errorComment ?? "") \(DebugLog.short(event.uri.flatMap(URL.init(string:))))")
+        }
     }
 
     // MARK: Controls

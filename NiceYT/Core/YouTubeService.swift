@@ -85,9 +85,9 @@ enum YouTube {
 
     // MARK: Watch
 
-    /// Tries several player clients until one returns an HLS manifest
-    /// (order follows yt-dlp's current JS-less defaults).
-    static func stream(_ videoId: String) async throws -> StreamInfo {
+    /// Queries several player clients in parallel (order follows yt-dlp's current
+    /// JS-less defaults) and returns every usable stream, HLS first.
+    static func streamCandidates(_ videoId: String) async -> [StreamInfo] {
         let body: [String: Any] = [
             "videoId": videoId,
             "contentCheckOk": true,
@@ -98,20 +98,34 @@ enum YouTube {
         if CookieJar.shared.isSignedIn { clients.append(.webSafari) }
         clients.append(.mweb)
 
-        var firstError: Error?
-        var progressive: StreamInfo?
-        for client in clients {
-            do {
-                let j = try await api.post("player", body, client: client, authenticated: client.supportsCookies)
-                let s = try Parser.stream(j, videoId: videoId, client: client)
-                if s.isHLS { return s }
-                if progressive == nil { progressive = s }
-            } catch {
-                if firstError == nil { firstError = error }
+        let results = await withTaskGroup(of: (Int, StreamInfo?).self) { group in
+            for (index, client) in clients.enumerated() {
+                group.addTask {
+                    do {
+                        let j = try await api.post("player", body, client: client, authenticated: client.supportsCookies)
+                        let status = j.at("playabilityStatus.status").string ?? "?"
+                        let sd = j["streamingData"]
+                        let formats = sd["formats"].array.count + sd["adaptiveFormats"].array.count
+                        DebugLog.log("[\(client.name)] Status \(status), HLS \(sd["hlsManifestUrl"].exists ? "ja" : "nein"), Formate \(formats), SABR \(sd["serverAbrStreamingUrl"].exists ? "ja" : "nein")\(status == "OK" ? "" : " – " + (j.at("playabilityStatus.reason").string ?? ""))")
+                        return (index, try Parser.stream(j, videoId: videoId, client: client))
+                    } catch {
+                        DebugLog.log("[\(client.name)] Fehler: \(error.localizedDescription)")
+                        return (index, nil)
+                    }
+                }
             }
+            var collected: [(Int, StreamInfo?)] = []
+            for await r in group { collected.append(r) }
+            return collected
         }
-        if let progressive { return progressive }
-        throw firstError ?? YTError.unplayable("Kein Stream verfügbar.")
+        let ordered = results.sorted { $0.0 < $1.0 }.compactMap { $0.1 }
+        return ordered.filter(\.isHLS) + ordered.filter { !$0.isHLS }
+    }
+
+    /// Metadata-only player response (title, captions …) from the first answering client.
+    static func stream(_ videoId: String) async throws -> StreamInfo {
+        if let first = await streamCandidates(videoId).first { return first }
+        throw YTError.unplayable("Kein Stream verfügbar.")
     }
 
     static func watch(_ videoId: String, playlistId: String? = nil) async throws -> WatchDetails {
