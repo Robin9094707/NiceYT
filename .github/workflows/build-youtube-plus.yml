@@ -1,0 +1,132 @@
+name: Build YouTube Plus (official app + YTLite, Liquid Glass)
+
+# Alternative route: the official YouTube app with all its features, patched with
+# YTLite / YouTube Plus (ad-free, background play, downloads, SponsorBlock …) and with
+# the iOS 26 Liquid Glass design force-enabled.
+# Requires a DECRYPTED YouTube IPA that you provide yourself (direct download link).
+
+on:
+  workflow_dispatch:
+    inputs:
+      ipa_url:
+        description: "Direkter Download-Link zur ENTSCHLÜSSELTEN YouTube-IPA"
+        required: true
+        type: string
+      tweak_version:
+        description: "YTLite-Version (5.2b4 = letzte kostenlose Version; ab 5.2 Abo nötig)"
+        default: "5.2b4"
+        required: true
+        type: string
+      enable_youpip:
+        description: "YouPiP (Bild-in-Bild)"
+        type: boolean
+        default: true
+      enable_ytuhd:
+        description: "YTUHD (1440p/4K)"
+        type: boolean
+        default: true
+      enable_ryd:
+        description: "Return YouTube Dislikes"
+        type: boolean
+        default: true
+      enable_yq:
+        description: "YouQuality (Qualitätsbutton im Player)"
+        type: boolean
+        default: false
+      enable_demc:
+        description: "DontEatMyContent (Notch/Dynamic Island)"
+        type: boolean
+        default: true
+      liquid_glass:
+        description: "Liquid Glass erzwingen (UIDesignRequiresCompatibility entfernen)"
+        type: boolean
+        default: true
+      display_name:
+        description: "App-Name"
+        default: "YouTube"
+        required: true
+        type: string
+      bundle_id:
+        description: "Bundle-ID"
+        default: "com.google.ios.youtube"
+        required: true
+        type: string
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build-tweaks:
+    uses: dayanch96/YTLite/.github/workflows/_build_tweaks.yml@main
+    with:
+      enable_youpip: ${{ inputs.enable_youpip }}
+      enable_ytuhd: ${{ inputs.enable_ytuhd }}
+      enable_yq: ${{ inputs.enable_yq }}
+      enable_ryd: ${{ inputs.enable_ryd }}
+      enable_ytabc: false
+      enable_demc: ${{ inputs.enable_demc }}
+      enable_localization: false
+      tweak_version: ${{ inputs.tweak_version }}
+
+  package:
+    name: Package IPA
+    runs-on: macos-latest
+    needs: build-tweaks
+    permissions:
+      contents: write
+    steps:
+      - name: Download built debs
+        uses: actions/download-artifact@v4
+        with:
+          name: built-debs
+          path: ${{ github.workspace }}
+
+      - name: Download and validate IPA
+        env:
+          IPA_URL: ${{ inputs.ipa_url }}
+        run: |
+          echo "::add-mask::$IPA_URL"
+          wget "$IPA_URL" --no-verbose -O youtube.ipa
+          file_type=$(file --mime-type -b youtube.ipa)
+          if [[ "$file_type" != "application/x-ios-app" && "$file_type" != "application/zip" ]]; then
+            echo "::error::Die Datei ist keine gültige IPA (erkannt: $file_type)."
+            exit 1
+          fi
+
+      - name: Patch Info.plist
+        run: |
+          unzip -q youtube.ipa -d ipa_tmp
+          app="$(find ipa_tmp/Payload -maxdepth 1 -name '*.app' | head -n 1)"
+          plist="$app/Info.plist"
+          if [ "${{ inputs.liquid_glass }}" = "true" ]; then
+            /usr/libexec/PlistBuddy -c "Delete :UIDesignRequiresCompatibility" "$plist" 2>/dev/null || true
+            echo "Liquid Glass aktiviert"
+          fi
+          /usr/libexec/PlistBuddy -c "Delete :NSFaceIDUsageDescription" "$plist" 2>/dev/null || true
+          /usr/libexec/PlistBuddy -c "Add :NSFaceIDUsageDescription string 'Face ID is required to authenticate.'" "$plist"
+          /usr/libexec/PlistBuddy -c "Print :CFBundleShortVersionString" "$plist"
+          rm youtube.ipa
+          (cd ipa_tmp && zip -qry ../youtube.ipa .)
+          rm -rf ipa_tmp
+
+      - name: Install cyan
+        run: pipx install --force https://github.com/asdfzxcvbn/pyzule-rw/archive/main.zip
+
+      - name: Inject tweaks
+        run: |
+          tweaks="ytplus.deb"
+          [ -d OpenYoutubeSafariExtension.appex ] && tweaks="$tweaks OpenYoutubeSafariExtension.appex"
+          for f in *.deb; do
+            [ "$f" != "ytplus.deb" ] && [ -f "$f" ] && tweaks="$tweaks $f"
+          done
+          echo "Injecting: $tweaks"
+          cyan -i youtube.ipa -o YouTubePlus.ipa -uwef $tweaks -n "${{ inputs.display_name }}" -b "${{ inputs.bundle_id }}"
+
+      - name: Publish release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ytplus-${{ github.run_number }}
+          name: YouTube Plus ${{ inputs.tweak_version }} (${{ github.run_number }})
+          files: YouTubePlus.ipa
+          draft: true

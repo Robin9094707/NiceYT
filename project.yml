@@ -1,0 +1,69 @@
+name: NiceYT
+options:
+  bundleIdPrefix: com.robin
+  deploymentTarget:
+    iOS: "26.0"
+  createIntermediateGroups: true
+settings:
+  base:
+    SWIFT_VERSION: "5.0"
+    MARKETING_VERSION: "1.0.0"
+    CURRENT_PROJECT_VERSION: "1"
+    DEVELOPMENT_TEAM: ""
+targets:
+  NiceYT:
+    type: application
+    platform: iOS
+    sources:
+      - path: NiceYT
+        excludes:
+          - "Info.plist"
+    info:
+      path: NiceYT/Info.plist
+      properties:
+        CFBundleDisplayName: NiceYT
+        CFBundleName: NiceYT
+        CFBundleShortVersionString: $(MARKETING_VERSION)
+        CFBundleVersion: $(CURRENT_PROJECT_VERSION)
+        LSRequiresIPhoneOS: true
+        UILaunchScreen: {}
+        UIApplicationSceneManifest:
+          UIApplicationSupportsMultipleScenes: false
+        UIBackgroundModes: [audio]
+        UIRequiredDeviceCapabilities: [arm64]
+        UISupportedInterfaceOrientations:
+          - UIInterfaceOrientationPortrait
+          - UIInterfaceOrientationLandscapeLeft
+          - UIInterfaceOrientationLandscapeRight
+        UISupportedInterfaceOrientations~ipad:
+          - UIInterfaceOrientationPortrait
+          - UIInterfaceOrientationPortraitUpsideDown
+          - UIInterfaceOrientationLandscapeLeft
+          - UIInterfaceOrientationLandscapeRight
+        ITSAppUsesNonExemptEncryption: false
+        UIFileSharingEnabled: false
+        CFBundleURLTypes:
+          - CFBundleURLName: com.robin.niceyt
+            CFBundleURLSchemes: [niceyt]
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.robin.niceyt
+        PRODUCT_NAME: NiceYT
+        TARGETED_DEVICE_FAMILY: "1,2"
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
+        ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME: AccentColor
+        GENERATE_INFOPLIST_FILE: NO
+        CODE_SIGN_STYLE: Manual
+        CODE_SIGNING_ALLOWED: NO
+        CODE_SIGNING_REQUIRED: NO
+        CODE_SIGN_IDENTITY: ""
+        ENABLE_BITCODE: NO
+        SWIFT_OPTIMIZATION_LEVEL: -O
+        SWIFT_STRICT_CONCURRENCY: minimal
+schemes:
+  NiceYT:
+    build:
+      targets:
+        NiceYT: all
+    run:
+      config: Release
