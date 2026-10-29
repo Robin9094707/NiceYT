@@ -38,8 +38,24 @@ struct SettingsView: View {
                     Toggle("Bild-in-Bild automatisch", isOn: $settings.autoPiP)
                     Toggle("Nächstes Video automatisch", isOn: $settings.autoplayNext)
                     Toggle("Untertitel automatisch", isOn: $settings.captions)
+                    Toggle("An letzter Stelle weiterschauen", isOn: $settings.resumePlayback)
                 } header: {
                     Text("Wiedergabe")
+                }
+
+                Section {
+                    Toggle("Doppeltippen zum Spulen", isOn: $settings.doubleTapSeek)
+                    if settings.doubleTapSeek {
+                        Picker("Sprungweite", selection: $settings.seekInterval) {
+                            ForEach([5, 10, 15, 30], id: \.self) { Text("\($0) Sekunden").tag($0) }
+                        }
+                    }
+                    Toggle("Hochwischen für Querformat", isOn: $settings.swipeFullscreen)
+                    Toggle("Lautstärke & Helligkeit wischen", isOn: $settings.swipeVolume)
+                } header: {
+                    Text("Gesten")
+                } footer: {
+                    Text("Im Querformat: rechts wischen ändert die Lautstärke, links die Helligkeit. In der Mitte nach unten wischen beendet das Querformat.")
                 }
 
                 Section {

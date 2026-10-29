@@ -123,6 +123,17 @@ struct Thumbnail: View {
         Color.clear
             .aspectRatio(16 / 9, contentMode: .fit)
             .overlay { RemoteImage(url: video.bestThumbnail) }
+            .overlay(alignment: .bottom) {
+                if let progress = PositionStore.progress(video.id), progress > 0.02 {
+                    GeometryReader { geo in
+                        ZStack(alignment: .leading) {
+                            Rectangle().fill(.white.opacity(0.35))
+                            Rectangle().fill(Color.red).frame(width: geo.size.width * progress)
+                        }
+                    }
+                    .frame(height: 4)
+                }
+            }
             .clipShape(RoundedRectangle(cornerRadius: cornerRadius, style: .continuous))
             .overlay(alignment: .bottomTrailing) {
                 if video.isLive {
@@ -200,9 +211,12 @@ struct VideoRow: View {
     @EnvironmentObject private var player: PlayerModel
     let video: Video
     var present = true
+    var queue: [Video]? = nil
 
     var body: some View {
-        Button { player.play(video, present: present) } label: {
+        Button {
+            if let queue { player.play(video, queue: queue, present: present) } else { player.play(video, present: present) }
+        } label: {
             HStack(alignment: .top, spacing: 12) {
                 Thumbnail(video: video, cornerRadius: 14)
                     .frame(width: 168)
@@ -352,6 +366,12 @@ struct FeedSections: View {
     @EnvironmentObject private var shorts: ShortsModel
     let items: [FeedItem]
     var compact = false
+    var playAsQueue = false
+
+    private var queue: [Video]? {
+        guard playAsQueue else { return nil }
+        return items.compactMap { if case .video(let v) = $0 { return v } else { return nil } }
+    }
 
     private enum Section: Identifiable {
         case item(FeedItem)
@@ -388,7 +408,7 @@ struct FeedSections: View {
             case .item(let item):
                 switch item {
                 case .video(let v):
-                    if compact { VideoRow(video: v) } else { VideoCard(video: v) }
+                    if compact { VideoRow(video: v, queue: queue) } else { VideoCard(video: v) }
                 case .channel(let c):
                     ChannelRow(channel: c)
                 case .playlist(let p):
@@ -429,6 +449,7 @@ struct FeedScroll<Header: View>: View {
     @ObservedObject var loader: FeedLoader
     var compact = false
     var emptyText = "Nichts gefunden"
+    var playAsQueue = false
     @ViewBuilder var header: () -> Header
 
     var body: some View {
@@ -443,7 +464,7 @@ struct FeedScroll<Header: View>: View {
                     ContentUnavailableView(emptyText, systemImage: "play.slash")
                         .padding(.top, 60)
                 } else {
-                    FeedSections(items: loader.items, compact: compact)
+                    FeedSections(items: loader.items, compact: compact, playAsQueue: playAsQueue)
                     if loader.hasMore {
                         ProgressView()
                             .frame(maxWidth: .infinity)

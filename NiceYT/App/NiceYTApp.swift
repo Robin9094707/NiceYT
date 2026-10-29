@@ -2,6 +2,7 @@ import SwiftUI
 
 @main
 struct NiceYTApp: App {
+    @UIApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
     @StateObject private var settings = AppSettings.shared
     @StateObject private var account = AccountStore()
     @StateObject private var player = PlayerModel()

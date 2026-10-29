@@ -56,7 +56,7 @@ struct RootView: View {
         }
         .onChange(of: shorts.openRequest) { tab = .shorts }
         .onChange(of: player.isPresented) { _, presented in
-            if presented { shorts.setActive(false) }
+            if presented { shorts.setActive(false) } else { player.setFullscreen(false) }
         }
         .onOpenURL { url in
             if let id = YouTubeLink.videoId(from: url.absoluteString) {

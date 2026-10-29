@@ -31,6 +31,15 @@ final class PlayerModel: NSObject, ObservableObject {
     @Published private(set) var currentCaption: String?
     @Published private(set) var quality: VideoQuality = AppSettings.shared.quality
     @Published private(set) var sourceLabel: String?
+    @Published var isFullscreen = false
+    @Published private(set) var hud: GestureHUD?
+    @Published private(set) var queue: [Video] = []
+
+    enum GestureHUD: Equatable {
+        case seek(Int)
+        case volume(Float)
+        case brightness(Double)
+    }
 
     let player = AVPlayer()
     private let settings = AppSettings.shared
@@ -43,6 +52,8 @@ final class PlayerModel: NSObject, ObservableObject {
     private var artwork: MPMediaItemArtwork?
     private var toastTask: Task<Void, Never>?
     private var activeProxy: HLSProxy?
+    private var hudTask: Task<Void, Never>?
+    private var lastSavedPosition: Double = 0
 
     override init() {
         super.init()
@@ -102,7 +113,14 @@ final class PlayerModel: NSObject, ObservableObject {
 
     // MARK: Loading
 
-    func play(_ video: Video, present: Bool = true) {
+    /// Plays `video`; `queue` (e.g. a playlist) determines what comes next.
+    func play(_ video: Video, queue newQueue: [Video], present: Bool = true) {
+        queue = newQueue
+        play(video, present: present, keepQueue: true)
+    }
+
+    func play(_ video: Video, present: Bool = true, keepQueue: Bool = false) {
+        if !keepQueue, !queue.contains(where: { $0.id == video.id }) { queue = [] }
         if current?.id == video.id, error == nil {
             if present { isPresented = true }
             player.play()
@@ -127,6 +145,7 @@ final class PlayerModel: NSObject, ObservableObject {
         isSubscribed = false
         quality = settings.quality
         sourceLabel = nil
+        lastSavedPosition = 0
         if present { isPresented = true }
         player.replaceCurrentItem(with: nil)
         loadTask = Task { await load(video) }
@@ -219,6 +238,11 @@ final class PlayerModel: NSObject, ObservableObject {
             switch item.status {
             case .readyToPlay:
                 DebugLog.log("✔︎ Wiedergabe über \(candidate.label) nach \(Int(Date().timeIntervalSince(start) * 1000)) ms")
+                if settings.resumePlayback, let id = current?.id, let pos = PositionStore.position(id) {
+                    await player.seek(to: CMTime(seconds: pos, preferredTimescale: 600))
+                    let m = Int(pos) / 60, sec = Int(pos) % 60
+                    showToast(String(format: "Fortgesetzt bei %d:%02d", m, sec))
+                }
                 return true
             case .failed:
                 let e = item.error as NSError?
@@ -253,16 +277,53 @@ final class PlayerModel: NSObject, ObservableObject {
         current = nil
         stream = nil
         details = nil
+        queue = []
         isPresented = false
+        setFullscreen(false)
         MPNowPlayingInfoCenter.default().nowPlayingInfo = nil
     }
 
     func playNext() {
+        if let id = current?.id, let idx = queue.firstIndex(where: { $0.id == id }), idx + 1 < queue.count {
+            play(queue[idx + 1], present: isPresented, keepQueue: true)
+            return
+        }
         guard let next = details?.related.compactMap({ item -> Video? in
             if case .video(let v) = item, !v.isLive { return v }
             return nil
         }).first else { return }
         play(next, present: isPresented)
+    }
+
+    var upNext: [Video] {
+        guard let id = current?.id, let idx = queue.firstIndex(where: { $0.id == id }) else { return [] }
+        return Array(queue[(idx + 1)...])
+    }
+
+    // MARK: Gestures
+
+    func gestureSeek(forward: Bool) {
+        let step = Double(settings.seekInterval)
+        seek(by: forward ? step : -step)
+        let previous: Int
+        if case .seek(let v) = hud, (v > 0) == forward { previous = v } else { previous = 0 }
+        showHUD(.seek(previous + (forward ? Int(step) : -Int(step))))
+    }
+
+    func showHUD(_ value: GestureHUD) {
+        hudTask?.cancel()
+        hud = value
+        hudTask = Task {
+            try? await Task.sleep(for: .milliseconds(900))
+            guard !Task.isCancelled else { return }
+            withAnimation(.easeOut) { hud = nil }
+        }
+    }
+
+    func setFullscreen(_ on: Bool) {
+        guard on != isFullscreen else { return }
+        isFullscreen = on
+        Orientation.set(landscape: on)
     }
 
     func setQuality(_ q: VideoQuality) {
@@ -282,6 +343,7 @@ final class PlayerModel: NSObject, ObservableObject {
     }
 
     private func didFinish() {
+        if let id = current?.id { PositionStore.remove(id) }
         guard settings.autoplayNext else { return }
         playNext()
     }
@@ -373,6 +435,10 @@ final class PlayerModel: NSObject, ObservableObject {
         guard time.isFinite else { return }
         if let duration = player.currentItem?.duration.seconds, duration.isFinite, duration > 0 {
             progress = time / duration
+            if abs(time - lastSavedPosition) > 5, let id = current?.id, stream?.isLive != true {
+                lastSavedPosition = time
+                PositionStore.save(id, position: time, duration: duration)
+            }
         }
 
         if settings.sponsorBlock {

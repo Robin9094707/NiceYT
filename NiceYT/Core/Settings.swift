@@ -69,6 +69,11 @@ final class AppSettings: ObservableObject {
     @Published var autoplayNext: Bool { didSet { d.set(autoplayNext, forKey: "autoplayNext") } }
     @Published var captions: Bool { didSet { d.set(captions, forKey: "captions") } }
     @Published var hideShorts: Bool { didSet { d.set(hideShorts, forKey: "hideShorts") } }
+    @Published var doubleTapSeek: Bool { didSet { d.set(doubleTapSeek, forKey: "doubleTapSeek") } }
+    @Published var seekInterval: Int { didSet { d.set(seekInterval, forKey: "seekInterval") } }
+    @Published var swipeFullscreen: Bool { didSet { d.set(swipeFullscreen, forKey: "swipeFullscreen") } }
+    @Published var swipeVolume: Bool { didSet { d.set(swipeVolume, forKey: "swipeVolume") } }
+    @Published var resumePlayback: Bool { didSet { d.set(resumePlayback, forKey: "resumePlayback") } }
     @Published var accent: AccentChoice { didSet { d.set(accent.rawValue, forKey: "accent") } }
     @Published var language: String { didSet { d.set(language, forKey: "hl") } }
     @Published var region: String { didSet { d.set(region, forKey: "gl") } }
@@ -102,6 +107,11 @@ final class AppSettings: ObservableObject {
             "autoplayNext": true,
             "captions": false,
             "hideShorts": false,
+            "doubleTapSeek": true,
+            "seekInterval": 10,
+            "swipeFullscreen": true,
+            "swipeVolume": false,
+            "resumePlayback": true,
             "accent": AccentChoice.red.rawValue,
             "hl": Locale.current.language.languageCode?.identifier ?? "de",
             "gl": Locale.current.region?.identifier ?? "DE",
@@ -115,6 +125,11 @@ final class AppSettings: ObservableObject {
         autoplayNext = d.bool(forKey: "autoplayNext")
         captions = d.bool(forKey: "captions")
         hideShorts = d.bool(forKey: "hideShorts")
+        doubleTapSeek = d.bool(forKey: "doubleTapSeek")
+        seekInterval = d.integer(forKey: "seekInterval")
+        swipeFullscreen = d.bool(forKey: "swipeFullscreen")
+        swipeVolume = d.bool(forKey: "swipeVolume")
+        resumePlayback = d.bool(forKey: "resumePlayback")
         accent = AccentChoice(rawValue: d.string(forKey: "accent") ?? "") ?? .red
         language = d.string(forKey: "hl") ?? "de"
         region = d.string(forKey: "gl") ?? "DE"

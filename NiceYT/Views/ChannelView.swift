@@ -152,7 +152,7 @@ struct PlaylistView: View {
     private var videos: [Video] { loader.items.compactMap(\.video) }
 
     var body: some View {
-        FeedScroll(loader: loader, compact: true, emptyText: "Diese Playlist ist leer") {
+        FeedScroll(loader: loader, compact: true, emptyText: "Diese Playlist ist leer", playAsQueue: true) {
             if let page = holder.page {
                 VStack(alignment: .leading, spacing: 14) {
                     if let thumb = page.thumbnail {
@@ -168,13 +168,14 @@ struct PlaylistView: View {
                     }
                     HStack(spacing: 10) {
                         Button {
-                            if let first = videos.first { player.play(first) }
+                            if let first = videos.first { player.play(first, queue: videos) }
                         } label: {
                             Label("Abspielen", systemImage: "play.fill").frame(maxWidth: .infinity).padding(.vertical, 4)
                         }
                         .buttonStyle(.glassProminent)
                         Button {
-                            if let random = videos.randomElement() { player.play(random) }
+                            let shuffled = videos.shuffled()
+                            if let first = shuffled.first { player.play(first, queue: shuffled) }
                         } label: {
                             Label("Zufällig", systemImage: "shuffle").frame(maxWidth: .infinity).padding(.vertical, 4)
                         }

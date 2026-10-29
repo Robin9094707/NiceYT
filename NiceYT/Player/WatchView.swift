@@ -12,7 +12,7 @@ struct WatchView: View {
     var body: some View {
         NavigationStack(path: $path) {
             GeometryReader { geo in
-                if vSize == .compact {
+                if vSize == .compact || player.isFullscreen {
                     // Landscape: video fills the screen.
                     videoArea.frame(width: geo.size.width, height: geo.size.height)
                         .ignoresSafeArea()
@@ -31,7 +31,9 @@ struct WatchView: View {
                     }
                 }
             }
-            .background(Color(.systemBackground))
+            .background(vSize == .compact || player.isFullscreen ? Color.black : Color(.systemBackground))
+            .statusBarHidden(vSize == .compact || player.isFullscreen)
+            .persistentSystemOverlays(vSize == .compact || player.isFullscreen ? .hidden : .automatic)
             .toolbar(.hidden, for: .navigationBar)
             .withRoutes()
             .overlay(alignment: .top) { toastView }
@@ -86,8 +88,9 @@ struct WatchView: View {
                 .allowsHitTesting(false)
             }
         }
+        .overlay { gestureHUD }
         .overlay(alignment: .topLeading) {
-            if vSize != .compact {
+            if vSize != .compact && !player.isFullscreen {
                 Button { player.isPresented = false } label: {
                     Image(systemName: "chevron.down")
                         .font(.headline)
@@ -98,6 +101,58 @@ struct WatchView: View {
                 .padding(10)
             }
         }
+        .overlay(alignment: .topTrailing) {
+            if player.error == nil {
+                let full = vSize == .compact || player.isFullscreen
+                Button {
+                    player.setFullscreen(!full)
+                } label: {
+                    Image(systemName: full ? "arrow.down.right.and.arrow.up.left" : "arrow.up.left.and.arrow.down.right")
+                        .font(.subheadline.weight(.semibold))
+                        .frame(width: 34, height: 34)
+                }
+                .buttonStyle(.glass)
+                .buttonBorderShape(.circle)
+                .padding(full ? 20 : 10)
+            }
+        }
+    }
+
+    // MARK: Gesture feedback
+
+    @ViewBuilder private var gestureHUD: some View {
+        switch player.hud {
+        case .seek(let seconds):
+            HStack {
+                if seconds > 0 { Spacer() }
+                Label("\(seconds > 0 ? "+" : "")\(seconds) s", systemImage: seconds > 0 ? "goforward" : "gobackward")
+                    .font(.headline.monospacedDigit())
+                    .foregroundStyle(.white)
+                    .padding(.horizontal, 18).padding(.vertical, 12)
+                    .glassEffect(.regular, in: .capsule)
+                    .padding(.horizontal, 40)
+                if seconds < 0 { Spacer() }
+            }
+            .transition(.opacity.combined(with: .scale(scale: 0.9)))
+            .allowsHitTesting(false)
+        case .volume(let v):
+            levelHUD(icon: v == 0 ? "speaker.slash.fill" : "speaker.wave.2.fill", value: Double(v))
+        case .brightness(let b):
+            levelHUD(icon: "sun.max.fill", value: b)
+        case nil:
+            EmptyView()
+        }
+    }
+
+    private func levelHUD(icon: String, value: Double) -> some View {
+        HStack(spacing: 12) {
+            Image(systemName: icon)
+            ProgressView(value: value).frame(width: 120).tint(.white)
+        }
+        .foregroundStyle(.white)
+        .padding(.horizontal, 18).padding(.vertical, 12)
+        .glassEffect(.regular, in: .capsule)
+        .allowsHitTesting(false)
     }
 
     // MARK: Info
@@ -267,6 +322,17 @@ struct WatchView: View {
     // MARK: Related
 
     @ViewBuilder private var relatedSection: some View {
+        if !player.upNext.isEmpty {
+            HStack {
+                Label("Playlist", systemImage: "list.bullet").font(.headline)
+                Spacer()
+                Text("\(player.upNext.count) weitere").font(.caption).foregroundStyle(.secondary)
+            }
+            .padding(.top, 4)
+            ForEach(player.upNext.prefix(25)) { v in
+                VideoRow(video: v, present: true, queue: player.queue)
+            }
+        }
         if let related = details?.related {
             Text("Als Nächstes").font(.headline).padding(.top, 4)
             ForEach(related) { item in
