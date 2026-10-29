@@ -41,7 +41,7 @@ struct ShortsView: View {
         .onChange(of: path.count) { _, count in shorts.setPushed(count > 0) }
         .sheet(item: $shorts.commentsItem) { item in
             if let token = shorts.commentsToken(for: item.id) {
-                CommentsView(token: token, count: shorts.details[item.id]?.commentCount)
+                CommentsView(token: token, count: shorts.details[item.id]?.commentCount, videoId: item.id)
                     .presentationDetents([.medium, .large])
                     .presentationBackgroundInteraction(.enabled(upThrough: .medium))
             }

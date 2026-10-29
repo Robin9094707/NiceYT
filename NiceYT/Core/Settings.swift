@@ -28,6 +28,20 @@ enum VideoQuality: String, CaseIterable, Identifiable {
     }
 }
 
+/// Which audio track to play when YouTube offers AI-dubbed translations.
+enum AudioPreference: String, CaseIterable, Identifiable {
+    case original, german = "de", system
+
+    var id: String { rawValue }
+    var label: String {
+        switch self {
+        case .original: return "Originalton"
+        case .german: return "Deutsche Übersetzung"
+        case .system: return "Wie YouTube (automatisch)"
+        }
+    }
+}
+
 enum AccentChoice: String, CaseIterable, Identifiable {
     case red, pink, purple, blue, teal, mint, orange
 
@@ -75,6 +89,7 @@ final class AppSettings: ObservableObject {
     @Published var swipeVolume: Bool { didSet { d.set(swipeVolume, forKey: "swipeVolume") } }
     @Published var resumePlayback: Bool { didSet { d.set(resumePlayback, forKey: "resumePlayback") } }
     @Published var accent: AccentChoice { didSet { d.set(accent.rawValue, forKey: "accent") } }
+    @Published var audioPreference: AudioPreference { didSet { d.set(audioPreference.rawValue, forKey: "audioPreference") } }
     @Published var language: String { didSet { d.set(language, forKey: "hl") } }
     @Published var region: String { didSet { d.set(region, forKey: "gl") } }
     @Published var sponsorCategories: Set<String> {
@@ -113,6 +128,7 @@ final class AppSettings: ObservableObject {
             "swipeVolume": false,
             "resumePlayback": true,
             "accent": AccentChoice.red.rawValue,
+            "audioPreference": AudioPreference.original.rawValue,
             // The app is German, so YouTube content (dates, view counts, comment sorting …)
             // is requested in German as well; it can be changed in the settings.
             "hl": "de",
@@ -133,6 +149,7 @@ final class AppSettings: ObservableObject {
         swipeVolume = d.bool(forKey: "swipeVolume")
         resumePlayback = d.bool(forKey: "resumePlayback")
         accent = AccentChoice(rawValue: d.string(forKey: "accent") ?? "") ?? .red
+        audioPreference = AudioPreference(rawValue: d.string(forKey: "audioPreference") ?? "") ?? .original
         language = d.string(forKey: "hl") ?? "de"
         region = d.string(forKey: "gl") ?? "DE"
         sponsorCategories = Set(d.stringArray(forKey: "sponsorCategories") ?? [])
@@ -162,5 +179,9 @@ final class AppSettings: ObservableObject {
     ]
 
     static var hl: String { UserDefaults.standard.string(forKey: "hl") ?? "de" }
+    /// Thread-safe read of the audio preference (used while resolving streams).
+    static var audioPreferenceValue: AudioPreference {
+        AudioPreference(rawValue: UserDefaults.standard.string(forKey: "audioPreference") ?? "") ?? .original
+    }
     static var gl: String { UserDefaults.standard.string(forKey: "gl") ?? "DE" }
 }

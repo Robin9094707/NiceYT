@@ -87,6 +87,10 @@ struct Comment: Identifiable, Hashable, Sendable {
     var replyCount: Int = 0
     var repliesToken: String?
     var isCreator = false
+    /// Parameters for answering this comment (only present when signed in).
+    var replyParams: String?
+    /// Written in this session (shown before YouTube lists it).
+    var isOwn = false
 }
 
 struct CommentPage: Sendable {
@@ -96,6 +100,8 @@ struct CommentPage: Sendable {
     var countText: String?
     /// InnerTube endpoint that served this page (continuations use the same one).
     var endpoint = "next"
+    /// Parameters for writing a new comment (only present when signed in).
+    var createParams: String?
 }
 
 struct CaptionTrack: Identifiable, Hashable, Sendable {
@@ -104,6 +110,23 @@ struct CaptionTrack: Identifiable, Hashable, Sendable {
     let languageCode: String
     let url: URL
     let isAuto: Bool
+}
+
+/// One audio language of an adaptive stream (e.g. the original and AI-dubbed tracks).
+struct AudioTrack: Hashable, Sendable {
+    let id: String
+    let name: String
+    let url: URL
+    let language: String
+    let isOriginal: Bool
+    let isDubbed: Bool
+}
+
+/// Audio track entry shown in the player's menu.
+struct AudioChoice: Identifiable, Hashable {
+    let id: String
+    let title: String
+    let isSelected: Bool
 }
 
 struct StreamInfo: Sendable {
@@ -125,6 +148,14 @@ struct StreamInfo: Sendable {
     let description: String
     let isLive: Bool
     let captions: [CaptionTrack]
+    /// All audio languages of an adaptive stream (`audioURL` is the selected one).
+    var audioTracks: [AudioTrack] = []
+    /// HLS audio renditions marked as original / dubbed by YouTube (by NAME).
+    var hlsOriginalAudio: Set<String> = []
+    var hlsDubbedAudio: Set<String> = []
+
+    /// Identifies the source, so a failed one isn't tried again.
+    var sourceKey: String { source + (isHLS ? " HLS" : "") }
 }
 
 struct WatchDetails: Sendable {

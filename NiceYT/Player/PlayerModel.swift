@@ -44,6 +44,8 @@ final class PlayerModel: NSObject, ObservableObject {
     /// Zoom to fill the screen in fullscreen (pinch gesture).
     @Published var videoFill = false
     @Published private(set) var queue: [Video] = []
+    /// Audio languages of the current video (original / AI-dubbed translations).
+    @Published private(set) var audioChoices: [AudioChoice] = []
 
     enum GestureHUD: Equatable {
         case seek(Int)
@@ -65,6 +67,11 @@ final class PlayerModel: NSObject, ObservableObject {
     private var activeProxy: HLSProxy?
     private var hudTask: Task<Void, Never>?
     private var lastSavedPosition: Double = 0
+    /// Sources that broke off during playback of the current video.
+    private var failedSources = Set<String>()
+    private var currentSourceKey: String?
+    private var recoveries = 0
+    private var hlsAudioGroup: AVMediaSelectionGroup?
 
     override init() {
         super.init()
@@ -105,9 +112,20 @@ final class PlayerModel: NSObject, ObservableObject {
 
         NotificationCenter.default.publisher(for: AVPlayerItem.failedToPlayToEndTimeNotification)
             .receive(on: DispatchQueue.main)
-            .sink { note in
+            .sink { [weak self] note in
                 let e = note.userInfo?[AVPlayerItemFailedToPlayToEndTimeErrorKey] as? NSError
                 DebugLog.log("✖︎ Abbruch: \(e?.domain ?? "") \(e?.code ?? 0) \(e?.localizedDescription ?? "")")
+                guard let self, let item = note.object as? AVPlayerItem, item === self.player.currentItem else { return }
+                self.recoverPlayback()
+            }
+            .store(in: &cancellables)
+
+        // A stream that was fine at first can still fail later (e.g. expired segments).
+        player.publisher(for: \.currentItem?.status)
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] status in
+                guard status == .failed else { return }
+                self?.recoverPlayback()
             }
             .store(in: &cancellables)
 
@@ -159,6 +177,11 @@ final class PlayerModel: NSObject, ObservableObject {
         quality = settings.quality
         sourceLabel = nil
         lastSavedPosition = 0
+        failedSources = []
+        currentSourceKey = nil
+        recoveries = 0
+        hlsAudioGroup = nil
+        audioChoices = []
         if present { presentPlayer() }
         player.pause()
         player.replaceCurrentItem(with: nil)
@@ -175,23 +198,46 @@ final class PlayerModel: NSObject, ObservableObject {
         guard let video = current else { return }
         error = nil
         isLoading = true
+        failedSources = []
+        recoveries = 0
         loadTask?.cancel()
         loadTask = Task { await load(video) }
     }
 
-    private func load(_ video: Video) async {
-        let id = video.id
-        let detailsTask = Task { try? await YouTube.watch(id) }
+    /// Playback broke off after it had started: continue at the same position with
+    /// another source instead of leaving a dead player.
+    private func recoverPlayback() {
+        guard let video = current, !isLoading, error == nil, let key = currentSourceKey else { return }
+        let position = player.currentTime().seconds
+        currentSourceKey = nil
+        failedSources.insert(key)
+        guard recoveries < 3 else {
+            player.pause()
+            error = "Die Wiedergabe wurde unterbrochen. Tippe auf „Erneut versuchen“."
+            return
+        }
+        recoveries += 1
+        DebugLog.log("↻ Wiedergabe abgebrochen (\(key)) – neue Quelle ab \(Int(position)) s")
+        showToast("Verbindung unterbrochen – wird neu geladen")
+        isLoading = true
+        loadTask?.cancel()
+        loadTask = Task { await load(video, startAt: position.isFinite && position > 1 ? position : nil, reloadDetails: false) }
+    }
 
-        let prepared = await StreamResolver.firstPlayable(id) { candidate in
+    private func load(_ video: Video, startAt: Double? = nil, reloadDetails: Bool = true) async {
+        let id = video.id
+        let detailsTask: Task<WatchDetails?, Never>? = reloadDetails ? Task { try? await YouTube.watch(id) } : nil
+
+        let prepared = await StreamResolver.firstPlayable(id, excluding: failedSources) { candidate in
             guard !Task.isCancelled, self.current?.id == id else { return false }
-            return await self.tryPlay(candidate)
+            return await self.tryPlay(candidate, startAt: startAt)
         }
         guard !Task.isCancelled, current?.id == id else { return }
         if let prepared {
             let s = prepared.info
             stream = s
             sourceLabel = prepared.label
+            currentSourceKey = s.sourceKey
             if var v = current {
                 if v.title.isEmpty { v.title = s.title }
                 if v.channelName == nil, !s.author.isEmpty { v.channelName = s.author }
@@ -206,7 +252,8 @@ final class PlayerModel: NSObject, ObservableObject {
             isLoading = false
         }
 
-        if let d = await detailsTask.value, current?.id == id {
+        guard reloadDetails else { return }
+        if let d = await detailsTask?.value, current?.id == id {
             details = d
             likeStatus = d.likeStatus
             isSubscribed = d.isSubscribed
@@ -244,24 +291,85 @@ final class PlayerModel: NSObject, ObservableObject {
     }
 
     /// Hands a candidate to AVPlayer and waits until it is really playable.
-    private func tryPlay(_ candidate: PreparedStream) async -> Bool {
+    private func tryPlay(_ candidate: PreparedStream, startAt: Double? = nil) async -> Bool {
         let item = AVPlayerItem(asset: candidate.asset)
         apply(quality, to: item)
         item.externalMetadata = metadataItems(title: candidate.info.title, artist: candidate.info.author)
         activeProxy = candidate.proxy
         // A resumed video only starts after the seek, so its beginning doesn't flash up.
         let id = current?.id
-        let resume = settings.resumePlayback ? id.flatMap(PositionStore.position) : nil
+        let resume = startAt ?? (settings.resumePlayback ? id.flatMap(PositionStore.position) : nil)
         player.replaceCurrentItem(with: item)
         if resume == nil { player.play() }
         guard await StreamResolver.waitUntilReady(item, label: candidate.label) else { return false }
+        hlsAudioGroup = await StreamResolver.applyAudioPreference(item, info: candidate.info)
+        refreshAudioChoices(candidate.info)
         if let resume {
             _ = await player.seek(to: CMTime(seconds: resume, preferredTimescale: 600))
             if current?.id == id { player.play() }
-            let m = Int(resume) / 60, sec = Int(resume) % 60
-            showToast(String(format: "Fortgesetzt bei %d:%02d", m, sec))
+            if startAt == nil {
+                let m = Int(resume) / 60, sec = Int(resume) % 60
+                showToast(String(format: "Fortgesetzt bei %d:%02d", m, sec))
+            }
         }
         return true
+    }
+
+    // MARK: Audio tracks
+
+    private func refreshAudioChoices(_ info: StreamInfo? = nil) {
+        guard let info = info ?? stream else { audioChoices = []; return }
+        if let group = hlsAudioGroup, let item = player.currentItem {
+            let selected = item.currentMediaSelection.selectedMediaOption(in: group)
+            audioChoices = group.options.enumerated().map { i, option in
+                var title = option.displayName
+                if StreamResolver.isOriginal(option, info: info), !title.lowercased().contains("original") {
+                    title += " (Original)"
+                }
+                return AudioChoice(id: "hls-\(i)", title: title, isSelected: option == selected)
+            }
+        } else if info.audioTracks.count > 1 {
+            audioChoices = info.audioTracks.map { t in
+                var title = t.name
+                if t.isOriginal, !title.lowercased().contains("original") { title += " (Original)" }
+                return AudioChoice(id: t.id, title: title, isSelected: t.url == info.audioURL)
+            }
+        } else {
+            audioChoices = []
+        }
+    }
+
+    /// Switches the audio language, keeping the playback position.
+    func selectAudio(_ choice: AudioChoice) {
+        guard !choice.isSelected else { return }
+        if let group = hlsAudioGroup, let item = player.currentItem,
+           let index = Int(choice.id.dropFirst(4)), choice.id.hasPrefix("hls-"), group.options.indices.contains(index) {
+            item.select(group.options[index], in: group)
+            refreshAudioChoices()
+            showToast("Tonspur: \(choice.title)")
+            return
+        }
+        guard var info = stream, let track = info.audioTracks.first(where: { $0.id == choice.id }),
+              let id = current?.id else { return }
+        info.audioURL = track.url
+        let time = player.currentTime()
+        let wasPlaying = isPlaying
+        showToast("Tonspur: \(choice.title)")
+        Task {
+            guard let prepared = await StreamResolver.prepare(info), current?.id == id else {
+                showToast("Diese Tonspur ist gerade nicht verfügbar")
+                return
+            }
+            let item = AVPlayerItem(asset: prepared.asset)
+            apply(quality, to: item)
+            item.externalMetadata = metadataItems(title: info.title, artist: info.author)
+            player.replaceCurrentItem(with: item)
+            guard await StreamResolver.waitUntilReady(item, label: prepared.label), current?.id == id else { return }
+            _ = await player.seek(to: time, toleranceBefore: .zero, toleranceAfter: .zero)
+            if wasPlaying { player.play() }
+            stream = info
+            refreshAudioChoices(info)
+        }
     }
 
     // MARK: Controls
@@ -281,6 +389,9 @@ final class PlayerModel: NSObject, ObservableObject {
         isLoading = false
         queue = []
         activeProxy = nil
+        currentSourceKey = nil
+        hlsAudioGroup = nil
+        audioChoices = []
         live.progress = 0
         live.caption = nil
         isPresented = false

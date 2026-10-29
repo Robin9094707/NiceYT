@@ -41,7 +41,18 @@ final class CookieJar: @unchecked Sendable {
     }
 
     var header: String {
-        cookies.map { "\($0.key)=\($0.value)" }.joined(separator: "; ")
+        var c = cookies
+        // The PREF cookie carries the account's interface language (often "en" after
+        // signing in) and would override the language chosen in the app.
+        c["PREF"] = Self.pref(c["PREF"])
+        return c.map { "\($0.key)=\($0.value)" }.joined(separator: "; ")
+    }
+
+    private static func pref(_ value: String?) -> String {
+        var parts = (value ?? "").split(separator: "&").map(String.init)
+            .filter { !$0.isEmpty && !$0.hasPrefix("hl=") && !$0.hasPrefix("gl=") }
+        parts += ["hl=\(AppSettings.hl)", "gl=\(AppSettings.gl)"]
+        return parts.joined(separator: "&")
     }
 
     /// `SAPISIDHASH` style authorization used by the YouTube web client.

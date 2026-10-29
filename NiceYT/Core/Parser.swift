@@ -274,7 +274,10 @@ enum Parser {
     static func comments(_ j: JSON) -> CommentPage {
         var page = CommentPage()
         var entities: [String: JSON] = [:]
+        var toolbars: [String: JSON] = [:]
         for m in j.at("frameworkUpdates.entityBatchUpdate.mutations").array {
+            let toolbar = m["payload"]["engagementToolbarSurfaceEntityPayload"]
+            if toolbar.exists, let key = toolbar["key"].string ?? m["entityKey"].string { toolbars[key] = toolbar }
             let payload = m["payload"]["commentEntityPayload"]
             guard payload.exists else { continue }
             if let key = payload["key"].string ?? m["entityKey"].string { entities[key] = payload }
@@ -304,6 +307,9 @@ enum Parser {
             c.replyCount = Int((toolbar["replyCount"].string ?? "").filter(\.isNumber)) ?? 0
             c.repliesToken = repliesToken
             c.isCreator = author["isCreator"].bool ?? false
+            if let tk = vm["toolbarSurfaceKey"].string {
+                c.replyParams = toolbars[tk]?.findFirst("createReplyParams").string
+            }
             return c
         }
 
@@ -341,6 +347,7 @@ enum Parser {
 
         let header = root.findFirst("commentsHeaderRenderer")
         page.countText = header["countText"].text
+        page.createParams = header.findFirst("createCommentParams").string
         page.sortOptions = header.findFirst("sortFilterSubMenuRenderer")["subMenuItems"].array.compactMap { item -> (title: String, token: String)? in
             guard let title = item["title"].string,
                   let token = item.findFirst("continuationCommand")["token"].string else { return nil }
@@ -466,6 +473,16 @@ enum Parser {
         let height: Int
         let bitrate: Int
         let isMuxed: Bool
+        /// Audio language info (multi-language / AI-dubbed videos).
+        var audioTrackId: String?
+        var audioName: String?
+        var audioIsDefault = false
+        var audioIsOriginal = false
+        var audioIsDubbed = false
+
+        var audioLanguage: String {
+            String((audioTrackId ?? "").split(separator: ".").first ?? "")
+        }
 
         var isVideo: Bool { mime.hasPrefix("video/") }
         var isAudio: Bool { mime.hasPrefix("audio/") }
@@ -482,8 +499,20 @@ enum Parser {
             }
             let url = f["url"].string
             guard url != nil || cipher != nil else { return nil }
-            return RawFormat(itag: itag, url: url, cipher: cipher, mime: mime,
-                             height: f["height"].int ?? 0, bitrate: f["bitrate"].int ?? 0, isMuxed: muxed)
+            var raw = RawFormat(itag: itag, url: url, cipher: cipher, mime: mime,
+                                height: f["height"].int ?? 0, bitrate: f["bitrate"].int ?? 0, isMuxed: muxed)
+            let track = f["audioTrack"]
+            if track.exists {
+                raw.audioTrackId = track["id"].string
+                raw.audioName = track["displayName"].string
+                raw.audioIsDefault = track["audioIsDefault"].bool ?? false
+            }
+            // The stream URL carries xtags like "acont=original" / "acont=dubbed-auto".
+            let link = (url ?? cipher?.2 ?? "").removingPercentEncoding ?? ""
+            raw.audioIsOriginal = link.contains("acont=original")
+                || (raw.audioName?.lowercased().contains("original") ?? false)
+            raw.audioIsDubbed = link.contains("acont=dubbed")
+            return raw
         }
         let sd = j["streamingData"]
         return sd["formats"].array.compactMap { parse($0, muxed: true) }

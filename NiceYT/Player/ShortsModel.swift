@@ -223,7 +223,9 @@ final class ShortsModel: ObservableObject {
                 let item = AVPlayerItem(asset: candidate.asset)
                 item.preferredForwardBufferDuration = 4
                 player.replaceCurrentItem(with: item)
-                return await StreamResolver.waitUntilReady(item, label: candidate.label)
+                guard await StreamResolver.waitUntilReady(item, label: candidate.label) else { return false }
+                await StreamResolver.applyAudioPreference(item, info: candidate.info)
+                return true
             }
             guard let self, !Task.isCancelled, self.players[id] === player else { return }
             self.loadTasks[id] = nil

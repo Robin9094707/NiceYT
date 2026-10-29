@@ -19,14 +19,15 @@ enum StreamResolver {
     /// A fast pass uses the clients that answer first; only if none of them works are
     /// all clients (and finally the web player) asked.
     @MainActor
-    static func firstPlayable(_ videoId: String, accept: (PreparedStream) async -> Bool) async -> PreparedStream? {
+    static func firstPlayable(_ videoId: String, excluding: Set<String> = [],
+                              accept: (PreparedStream) async -> Bool) async -> PreparedStream? {
         DebugLog.log("▶︎ Video \(videoId)")
-        var tried = Set<String>()
+        var tried = excluding
         for thorough in [false, true] {
             let result = await YouTube.streamCandidates(videoId, thorough: thorough)
             for info in result.candidates {
                 if Task.isCancelled { return nil }
-                guard tried.insert(info.source + (info.isHLS ? " HLS" : "")).inserted else { continue }
+                guard tried.insert(info.sourceKey).inserted else { continue }
                 if let prepared = await prepare(info), await accept(prepared) { return prepared }
             }
             if result.complete { break }
@@ -35,7 +36,7 @@ enum StreamResolver {
         }
         if Task.isCancelled { return nil }
         DebugLog.log("↻ Fallback: Web-Player-Extraktion")
-        if let info = await WebViewExtractor.shared.extract(videoId),
+        if let info = await WebViewExtractor.shared.extract(videoId), !tried.contains(info.sourceKey),
            let prepared = await prepare(info), await accept(prepared) {
             return prepared
         }
@@ -71,6 +72,39 @@ enum StreamResolver {
         for event in item.errorLog()?.events.suffix(4) ?? [] {
             DebugLog.log("   ErrorLog \(event.errorStatusCode) \(event.errorDomain): \(event.errorComment ?? "") \(DebugLog.short(event.uri.flatMap(URL.init(string:))))")
         }
+    }
+
+    /// Selects the HLS audio rendition matching the audio preference (original vs.
+    /// AI-dubbed translation). Returns the group when there is a choice at all.
+    @MainActor
+    @discardableResult
+    static func applyAudioPreference(_ item: AVPlayerItem, info: StreamInfo) async -> AVMediaSelectionGroup? {
+        guard let group = try? await item.asset.loadMediaSelectionGroup(for: .audible), group.options.count > 1 else {
+            return nil
+        }
+        if AppSettings.audioPreferenceValue != .system,
+           let best = group.options.max(by: { score($0, in: group, info: info) < score($1, in: group, info: info) }) {
+            item.select(best, in: group)
+        }
+        return group
+    }
+
+    @MainActor
+    static func score(_ option: AVMediaSelectionOption, in group: AVMediaSelectionGroup, info: StreamInfo) -> Int {
+        AudioMatch.score(name: option.displayName, language: language(of: option),
+                         isDefault: option == group.defaultOption,
+                         original: info.hlsOriginalAudio.contains(option.displayName),
+                         dubbed: info.hlsDubbedAudio.contains(option.displayName))
+    }
+
+    @MainActor
+    static func isOriginal(_ option: AVMediaSelectionOption, info: StreamInfo) -> Bool {
+        info.hlsOriginalAudio.contains(option.displayName) || option.displayName.lowercased().contains("original")
+    }
+
+    @MainActor
+    static func language(of option: AVMediaSelectionOption) -> String {
+        option.extendedLanguageTag ?? option.locale?.identifier ?? ""
     }
 
     static func headers(for info: StreamInfo) -> [String: String] {
@@ -126,6 +160,15 @@ enum StreamResolver {
         }
         if let first = variants.first(where: { $0.contains("avc1") }) ?? variants.first {
             DebugLog.log("[\(label)] Variante: \(first.prefix(150))")
+        }
+        // Remember which audio renditions YouTube marks as original or AI-dubbed.
+        var info = info
+        for line in master.components(separatedBy: "\n") where line.hasPrefix("#EXT-X-MEDIA") && line.contains("TYPE=AUDIO") {
+            guard let r = line.range(of: #"NAME="([^"]+)""#, options: .regularExpression) else { continue }
+            let name = String(line[r].dropFirst(6).dropLast())
+            let lower = line.lowercased()
+            if lower.contains("acont=original") || lower.contains("acont%3doriginal") { info.hlsOriginalAudio.insert(name) }
+            if lower.contains("acont=dubbed") || lower.contains("acont%3ddubbed") { info.hlsDubbedAudio.insert(name) }
         }
 
         // 2. One variant playlist (prefer H.264 ~720p) to discover segment URLs.
@@ -355,5 +398,26 @@ final class HLSProxy: NSObject, AVAssetResourceLoaderDelegate, @unchecked Sendab
         https?.scheme = "https"
         guard let b = https?.url else { return nil }
         return URL(string: uri, relativeTo: b)?.absoluteURL
+    }
+}
+
+/// Ranks audio tracks by the user's preference (original sound vs. German AI dub).
+enum AudioMatch {
+    private static let dubbedWords = ["dubbed", "synchron", "automatisch", "übersetz", "translated", "auto-"]
+
+    static func score(name: String, language: String, isDefault: Bool, original: Bool, dubbed: Bool) -> Int {
+        let n = name.lowercased()
+        let isOriginal = original || n.contains("original")
+        let isDubbed = !isOriginal && (dubbed || dubbedWords.contains { n.contains($0) })
+        let lang = language.lowercased()
+        switch AppSettings.audioPreferenceValue {
+        case .original:
+            return (isOriginal ? 100 : 0) - (isDubbed ? 50 : 0) + (isDefault ? 10 : 0)
+        case .german:
+            return (lang.hasPrefix("de") ? 100 : 0) + (isOriginal ? 20 : 0) + (isDefault ? 5 : 0)
+        case .system:
+            let preferred = String((Locale.preferredLanguages.first ?? "de").prefix(2)).lowercased()
+            return (lang.hasPrefix(preferred) ? 100 : 0) + (isOriginal ? 20 : 0) + (isDefault ? 5 : 0)
+        }
     }
 }

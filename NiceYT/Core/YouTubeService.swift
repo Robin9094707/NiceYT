@@ -177,12 +177,24 @@ enum YouTube {
         let video = formats
             .filter { !$0.isMuxed && $0.mime.hasPrefix("video/mp4") && $0.mime.contains("avc1") && $0.height <= maxHeight }
             .max { ($0.height, $0.bitrate) < ($1.height, $1.bitrate) }
-        let audio = formats
-            .filter { !$0.isMuxed && $0.mime.hasPrefix("audio/mp4") }
-            .max { $0.bitrate < $1.bitrate }
+        // Videos with AI-dubbed translations have one audio set per language:
+        // keep the best format of each and pick the one matching the preference.
+        var audioByTrack: [String: Parser.RawFormat] = [:]
+        for f in formats where !f.isMuxed && f.mime.hasPrefix("audio/mp4") {
+            let key = f.audioTrackId ?? "default"
+            if let current = audioByTrack[key], current.bitrate >= f.bitrate { continue }
+            audioByTrack[key] = f
+        }
+        let audioFormats = Array(audioByTrack.values)
+        let audio = audioFormats.max {
+            AudioMatch.score(name: $0.audioName ?? "", language: $0.audioLanguage, isDefault: $0.audioIsDefault,
+                             original: $0.audioIsOriginal, dubbed: $0.audioIsDubbed)
+                < AudioMatch.score(name: $1.audioName ?? "", language: $1.audioLanguage, isDefault: $1.audioIsDefault,
+                                   original: $1.audioIsOriginal, dubbed: $1.audioIsDubbed)
+        }
         let muxed = formats.filter { $0.isMuxed && $0.mime.hasPrefix("video/mp4") }.max { $0.height < $1.height }
 
-        let chosen = [video, audio, muxed].compactMap { $0 }
+        let chosen = [video, muxed].compactMap { $0 } + (audioFormats.count > 1 ? audioFormats : [audio].compactMap { $0 })
         guard !chosen.isEmpty else { return out }
         let sigs = chosen.compactMap { $0.cipher?.s }
         var raw = chosen.compactMap { $0.url ?? $0.cipher?.url }
@@ -210,6 +222,15 @@ enum YouTube {
             s.isHLS = false
             s.hlsURL = v
             s.audioURL = a
+            if audioFormats.count > 1 {
+                s.audioTracks = audioFormats.compactMap { f -> AudioTrack? in
+                    guard let url = finalURL(f) else { return nil }
+                    let name = f.audioName ?? (f.audioLanguage.isEmpty ? "Standard" : f.audioLanguage)
+                    return AudioTrack(id: f.audioTrackId ?? "default", name: name, url: url, language: f.audioLanguage,
+                                      isOriginal: f.audioIsOriginal, isDubbed: f.audioIsDubbed)
+                }
+                .sorted { ($0.isOriginal ? 0 : 1, $0.name) < ($1.isOriginal ? 0 : 1, $1.name) }
+            }
             s.videoHeight = video.height
             s.source = "\(client.name) \(video.height)p"
             out.append(s)
@@ -362,6 +383,33 @@ enum YouTube {
         ])
     }
 
+    // MARK: Writing comments
+
+    /// Posts a new top-level comment. `params` comes from the comment section of a
+    /// signed-in response; without it the parameters are built like the web client does.
+    static func postComment(_ text: String, videoId: String, params: String?) async throws {
+        guard CookieJar.shared.isSignedIn else { throw YTError.notSignedIn }
+        let p = params ?? CommentParams.create(videoId: videoId)
+        let j = try await api.post("comment/create_comment", ["createCommentParams": p, "commentText": text])
+        try checkAction(j)
+    }
+
+    /// Answers the comment `commentId`.
+    static func postReply(_ text: String, videoId: String, commentId: String, params: String?) async throws {
+        guard CookieJar.shared.isSignedIn else { throw YTError.notSignedIn }
+        let p = params ?? CommentParams.reply(videoId: videoId, commentId: commentId)
+        let j = try await api.post("comment/create_comment_reply", ["createReplyParams": p, "commentText": text])
+        try checkAction(j)
+    }
+
+    private static func checkAction(_ j: JSON) throws {
+        let status = j.at("actionResult.status").string
+        if status == "STATUS_SUCCEEDED" || (status == nil && j["actions"].exists) { return }
+        let message = j.at("actionResult.feedback").text
+            ?? j.findFirst("errorMessage").findFirst("text").text
+        throw YTError.unplayable(message ?? "Der Kommentar konnte nicht gesendet werden.")
+    }
+
     // MARK: Shorts
 
     static func shortsStart() async throws -> (first: String?, sequence: String?) {
@@ -418,5 +466,45 @@ extension Int {
         case 10_000...: return (f.string(from: NSNumber(value: d / 1_000)) ?? "") + " Tsd."
         default: return f.string(from: NSNumber(value: self)) ?? "\(self)"
         }
+    }
+}
+
+/// Protobuf-encoded parameters for writing comments (same layout as the web client).
+enum CommentParams {
+    static func create(videoId: String) -> String {
+        encode(string(2, videoId) + message(5, varint(1, 0)) + varint(10, 7))
+    }
+
+    static func reply(videoId: String, commentId: String) -> String {
+        encode(string(2, videoId) + string(4, commentId) + message(5, varint(1, 0)) + varint(10, 7))
+    }
+
+    private static func rawVarint(_ value: Int) -> [UInt8] {
+        var v = UInt64(value)
+        var out: [UInt8] = []
+        repeat {
+            var byte = UInt8(v & 0x7F)
+            v >>= 7
+            if v != 0 { byte |= 0x80 }
+            out.append(byte)
+        } while v != 0
+        return out
+    }
+
+    private static func varint(_ field: Int, _ value: Int) -> [UInt8] {
+        rawVarint(field << 3) + rawVarint(value)
+    }
+
+    private static func message(_ field: Int, _ bytes: [UInt8]) -> [UInt8] {
+        rawVarint(field << 3 | 2) + rawVarint(bytes.count) + bytes
+    }
+
+    private static func string(_ field: Int, _ value: String) -> [UInt8] {
+        message(field, Array(value.utf8))
+    }
+
+    private static func encode(_ bytes: [UInt8]) -> String {
+        let base64 = Data(bytes).base64EncodedString()
+        return base64.addingPercentEncoding(withAllowedCharacters: .alphanumerics) ?? base64
     }
 }

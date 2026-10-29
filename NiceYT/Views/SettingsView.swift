@@ -43,10 +43,15 @@ struct SettingsView: View {
                     Toggle("Hintergrundwiedergabe", isOn: $settings.backgroundPlay)
                     Toggle("Bild-in-Bild automatisch", isOn: $settings.autoPiP)
                     Toggle("Nächstes Video automatisch", isOn: $settings.autoplayNext)
+                    Picker("Tonspur bei übersetzten Videos", selection: $settings.audioPreference) {
+                        ForEach(AudioPreference.allCases) { Text($0.label).tag($0) }
+                    }
                     Toggle("Untertitel automatisch", isOn: $settings.captions)
                     Toggle("An letzter Stelle weiterschauen", isOn: $settings.resumePlayback)
                 } header: {
                     Text("Wiedergabe")
+                } footer: {
+                    Text("Manche Videos haben eine automatisch erzeugte KI-Übersetzung. „Originalton“ spielt immer die echte Stimme ab. Im Player lässt sich die Tonspur pro Video über „Tonspur“ wechseln.")
                 }
 
                 Section {

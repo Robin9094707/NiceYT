@@ -15,8 +15,10 @@ private struct DragFollower<Content: View>: View {
     @ViewBuilder var content: Content
 
     var body: some View {
+        // No clipping here: it would cut off everything outside the safe area (video and
+        // black background in landscape, status bar area in portrait) and let the app
+        // behind the player shine through.
         content
-            .clipShape(RoundedRectangle(cornerRadius: min(44, live.dragOffset / 3), style: .continuous))
             .offset(y: live.dragOffset)
     }
 }
@@ -99,7 +101,7 @@ struct WatchView: View {
         .onChange(of: player.current?.id) { path = NavigationPath() }
         .sheet(isPresented: $showComments) {
             if let token = player.details?.commentsToken {
-                CommentsView(token: token, count: player.details?.commentCount)
+                CommentsView(token: token, count: player.details?.commentCount, videoId: player.current?.id)
                     .presentationDetents([.medium, .large])
                     .presentationBackgroundInteraction(.enabled(upThrough: .medium))
             }
@@ -226,6 +228,25 @@ struct WatchView: View {
                     }
                     .glassEffect(.regular.interactive(), in: .capsule)
 
+                    if player.audioChoices.count > 1 {
+                        Menu {
+                            Section("Tonspur") {
+                                ForEach(player.audioChoices) { choice in
+                                    Button { player.selectAudio(choice) } label: {
+                                        if choice.isSelected {
+                                            Label(choice.title, systemImage: "checkmark")
+                                        } else {
+                                            Text(choice.title)
+                                        }
+                                    }
+                                }
+                            }
+                        } label: {
+                            pill(player.audioChoices.first(where: \.isSelected).map { shortAudioTitle($0.title) } ?? "Tonspur",
+                                 "waveform")
+                        }
+                    }
+
                     if let v = video {
                         ShareLink(item: v.shareURL) {
                             pill("Teilen", "square.and.arrow.up")
@@ -264,6 +285,13 @@ struct WatchView: View {
             }
         }
         .scrollClipDisabled()
+    }
+
+    /// "Englisch (USA) – Original" → "Englisch · Original" for the compact pill.
+    private func shortAudioTitle(_ title: String) -> String {
+        let base = title.components(separatedBy: " (").first ?? title
+        return title.lowercased().contains("original") && !base.lowercased().contains("original")
+            ? base + " · Original" : base
     }
 
     private func pill(_ title: String, _ icon: String) -> some View {
