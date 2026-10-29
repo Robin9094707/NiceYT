@@ -138,7 +138,7 @@ final class ShortsModel: ObservableObject {
                     if let views = Int(s.viewCount ?? "") { v.views = views.compact + " Aufrufe" }
                     items[i].video = v
                 }
-                let asset = AVURLAsset(url: s.hlsURL, options: ["AVURLAssetHTTPHeaderFieldsKey": ["User-Agent": ITClient.iosUserAgent]])
+                let asset = AVURLAsset(url: s.hlsURL, options: ["AVURLAssetHTTPHeaderFieldsKey": ["User-Agent": s.userAgent]])
                 player.replaceCurrentItem(with: AVPlayerItem(asset: asset))
                 if active, currentID == id, !paused { player.play() }
             } catch {

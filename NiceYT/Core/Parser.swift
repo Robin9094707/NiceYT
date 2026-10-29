@@ -418,7 +418,7 @@ enum Parser {
 
     // MARK: Player
 
-    static func stream(_ j: JSON, videoId: String) throws -> StreamInfo {
+    static func stream(_ j: JSON, videoId: String, client: ITClient) throws -> StreamInfo {
         let status = j.at("playabilityStatus.status").string ?? ""
         guard status == "OK" else {
             let reason = j.at("playabilityStatus.reason").string
@@ -426,7 +426,17 @@ enum Parser {
                 ?? "Dieses Video kann nicht abgespielt werden (\(status))."
             throw YTError.unplayable(reason)
         }
-        guard let hls = j.at("streamingData.hlsManifestUrl").string, let url = URL(string: hls) else {
+        var isHLS = true
+        var url: URL
+        if let hls = j.at("streamingData.hlsManifestUrl").string, let u = URL(string: hls) {
+            url = u
+        } else if let muxed = j.at("streamingData.formats").array
+                    .filter({ $0["url"].string != nil })
+                    .max(by: { ($0["height"].int ?? 0) < ($1["height"].int ?? 0) }),
+                  let u = URL(string: muxed["url"].string!) {
+            url = u
+            isHLS = false
+        } else {
             throw YTError.unplayable("Kein Stream verfügbar.")
         }
         let vd = j["videoDetails"]
@@ -439,6 +449,8 @@ enum Parser {
         }
         return StreamInfo(videoId: videoId,
                           hlsURL: url,
+                          isHLS: isHLS,
+                          userAgent: client.userAgent,
                           title: vd["title"].string ?? "",
                           author: vd["author"].string ?? "",
                           channelId: vd["channelId"].string,

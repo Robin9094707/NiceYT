@@ -60,16 +60,65 @@ final class CookieJar: @unchecked Sendable {
     }
 }
 
+/// InnerTube client identities. Player clients mirror yt-dlp (2026.10).
 enum ITClient {
-    case web, ios
+    case web, ios, visionos, webSafari, mweb
 
-    static let webVersion = "2.20251020.01.00"
-    static let iosVersion = "21.16.2"
-    static let iosDevice = "iPhone17,2"
-    static let iosOS = "26.0.0.23A341"
+    static let webVersion = "2.20260708.00.00"
+    static let iosVersion = "21.26.4"
+    static let iosDevice = "iPhone16,2"
 
     static let webUserAgent = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/26.0 Safari/605.1.15"
-    static let iosUserAgent = "com.google.ios.youtube/\(iosVersion) (\(iosDevice); U; CPU iOS 26_0 like Mac OS X;)"
+    static let iosUserAgent = "com.google.ios.youtube/\(iosVersion) (\(iosDevice); U; CPU iOS 18_3_2 like Mac OS X;)"
+
+    var name: String {
+        switch self {
+        case .web, .webSafari: return "WEB"
+        case .ios: return "IOS"
+        case .visionos: return "VISIONOS"
+        case .mweb: return "MWEB"
+        }
+    }
+
+    var id: String {
+        switch self {
+        case .web, .webSafari: return "1"
+        case .ios: return "5"
+        case .visionos: return "101"
+        case .mweb: return "2"
+        }
+    }
+
+    var version: String {
+        switch self {
+        case .web, .webSafari: return Self.webVersion
+        case .ios: return Self.iosVersion
+        case .visionos: return "1.02"
+        case .mweb: return "2.20260708.05.00"
+        }
+    }
+
+    var userAgent: String {
+        switch self {
+        case .web: return Self.webUserAgent
+        case .ios: return Self.iosUserAgent
+        case .visionos: return "Mozilla/5.0 (Macintosh; Intel Mac OS X 15_7_3) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/26.0 Safari/605.1.15"
+        case .webSafari: return "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/15.5 Safari/605.1.15,gzip(gfe)"
+        case .mweb: return "Mozilla/5.0 (iPad; CPU OS 16_7_10 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.6 Mobile/15E148 Safari/604.1,gzip(gfe)"
+        }
+    }
+
+    /// Web-based clients accept the signed-in cookie session.
+    var supportsCookies: Bool { self == .web || self == .webSafari || self == .mweb }
+
+    var extraContext: [String: Any] {
+        switch self {
+        case .web: return ["platform": "DESKTOP"]
+        case .ios: return ["deviceMake": "Apple", "deviceModel": Self.iosDevice, "osName": "iPhone", "osVersion": "18.3.2.22D82"]
+        case .visionos: return ["deviceMake": "Apple", "deviceModel": "RealityDevice17,1", "osName": "visionOS", "osVersion": "26.5.23O471"]
+        case .webSafari, .mweb: return [:]
+        }
+    }
 }
 
 /// Minimal client for YouTube's private InnerTube API.
@@ -92,48 +141,39 @@ final class InnerTube: @unchecked Sendable {
         set { UserDefaults.standard.set(newValue, forKey: "visitorData") }
     }
 
-    func context(_ client: ITClient) -> [String: Any] {
+    func context(_ client: ITClient, includeVisitor: Bool = true) -> [String: Any] {
         var c: [String: Any] = [
             "hl": AppSettings.hl,
             "gl": AppSettings.gl,
-            "utcOffsetMinutes": TimeZone.current.secondsFromGMT() / 60
+            "utcOffsetMinutes": TimeZone.current.secondsFromGMT() / 60,
+            "clientName": client.name,
+            "clientVersion": client.version,
+            "userAgent": client.userAgent
         ]
-        switch client {
-        case .web:
-            c["clientName"] = "WEB"
-            c["clientVersion"] = ITClient.webVersion
-            c["platform"] = "DESKTOP"
-            c["userAgent"] = ITClient.webUserAgent
-        case .ios:
-            c["clientName"] = "IOS"
-            c["clientVersion"] = ITClient.iosVersion
-            c["deviceMake"] = "Apple"
-            c["deviceModel"] = ITClient.iosDevice
-            c["osName"] = "iPhone"
-            c["osVersion"] = ITClient.iosOS
-            c["userAgent"] = ITClient.iosUserAgent
-        }
-        if let v = visitorData { c["visitorData"] = v }
+        for (k, v) in client.extraContext { c[k] = v }
+        if includeVisitor, let v = visitorData { c["visitorData"] = v }
         return ["client": c, "user": ["lockedSafetyMode": false], "request": ["useSsl": true]]
     }
 
     /// POST to `youtubei/v1/<endpoint>`.
     func post(_ endpoint: String, _ body: [String: Any], client: ITClient = .web, authenticated: Bool = true) async throws -> JSON {
         var payload = body
-        payload["context"] = context(client)
+        // App clients get a clean context; mixing in the web session's visitor id can make
+        // YouTube withhold stream URLs.
+        let sendVisitor = client.supportsCookies
+        payload["context"] = context(client, includeVisitor: sendVisitor)
 
         var request = URLRequest(url: URL(string: "\(Self.origin)/youtubei/v1/\(endpoint)?prettyPrint=false")!)
         request.httpMethod = "POST"
         request.httpBody = try JSONSerialization.data(withJSONObject: payload)
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         request.setValue(AppSettings.hl, forHTTPHeaderField: "Accept-Language")
-        if let v = visitorData { request.setValue(v, forHTTPHeaderField: "X-Goog-Visitor-Id") }
+        request.setValue(client.userAgent, forHTTPHeaderField: "User-Agent")
+        request.setValue(client.id, forHTTPHeaderField: "X-Youtube-Client-Name")
+        request.setValue(client.version, forHTTPHeaderField: "X-Youtube-Client-Version")
+        if sendVisitor, let v = visitorData { request.setValue(v, forHTTPHeaderField: "X-Goog-Visitor-Id") }
 
-        switch client {
-        case .web:
-            request.setValue(ITClient.webUserAgent, forHTTPHeaderField: "User-Agent")
-            request.setValue("1", forHTTPHeaderField: "X-Youtube-Client-Name")
-            request.setValue(ITClient.webVersion, forHTTPHeaderField: "X-Youtube-Client-Version")
+        if client.supportsCookies {
             request.setValue(Self.origin, forHTTPHeaderField: "Origin")
             request.setValue(Self.origin, forHTTPHeaderField: "X-Origin")
             request.setValue(Self.origin + "/", forHTTPHeaderField: "Referer")
@@ -145,17 +185,13 @@ final class InnerTube: @unchecked Sendable {
                 }
                 request.setValue("0", forHTTPHeaderField: "X-Goog-AuthUser")
             }
-        case .ios:
-            request.setValue(ITClient.iosUserAgent, forHTTPHeaderField: "User-Agent")
-            request.setValue("5", forHTTPHeaderField: "X-Youtube-Client-Name")
-            request.setValue(ITClient.iosVersion, forHTTPHeaderField: "X-Youtube-Client-Version")
         }
 
         let (data, response) = try await session.data(for: request)
         let status = (response as? HTTPURLResponse)?.statusCode ?? 0
         guard (200..<300).contains(status) else { throw YTError.http(status) }
         let json = JSON(data: data)
-        if visitorData == nil, let v = json.at("responseContext.visitorData").string {
+        if client.supportsCookies, visitorData == nil, let v = json.at("responseContext.visitorData").string {
             visitorData = v
         }
         return json

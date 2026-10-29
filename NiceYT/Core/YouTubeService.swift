@@ -85,6 +85,8 @@ enum YouTube {
 
     // MARK: Watch
 
+    /// Tries several player clients until one returns an HLS manifest
+    /// (order follows yt-dlp's current JS-less defaults).
     static func stream(_ videoId: String) async throws -> StreamInfo {
         let body: [String: Any] = [
             "videoId": videoId,
@@ -92,8 +94,24 @@ enum YouTube {
             "racyCheckOk": true,
             "playbackContext": ["contentPlaybackContext": ["html5Preference": "HTML5_PREF_WANTS"]]
         ]
-        let j = try await api.post("player", body, client: .ios, authenticated: false)
-        return try Parser.stream(j, videoId: videoId)
+        var clients: [ITClient] = [.visionos, .ios]
+        if CookieJar.shared.isSignedIn { clients.append(.webSafari) }
+        clients.append(.mweb)
+
+        var firstError: Error?
+        var progressive: StreamInfo?
+        for client in clients {
+            do {
+                let j = try await api.post("player", body, client: client, authenticated: client.supportsCookies)
+                let s = try Parser.stream(j, videoId: videoId, client: client)
+                if s.isHLS { return s }
+                if progressive == nil { progressive = s }
+            } catch {
+                if firstError == nil { firstError = error }
+            }
+        }
+        if let progressive { return progressive }
+        throw firstError ?? YTError.unplayable("Kein Stream verfügbar.")
     }
 
     static func watch(_ videoId: String, playlistId: String? = nil) async throws -> WatchDetails {

@@ -106,7 +106,10 @@ struct CaptionTrack: Identifiable, Hashable, Sendable {
 
 struct StreamInfo: Sendable {
     let videoId: String
+    /// HLS manifest, or a progressive MP4 when no HLS was offered.
     let hlsURL: URL
+    var isHLS = true
+    var userAgent = ITClient.iosUserAgent
     let title: String
     let author: String
     let channelId: String?

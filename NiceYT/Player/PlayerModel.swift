@@ -134,7 +134,7 @@ final class PlayerModel: NSObject, ObservableObject {
                 if v.channelId == nil { v.channelId = s.channelId }
                 current = v
             }
-            let asset = AVURLAsset(url: s.hlsURL, options: ["AVURLAssetHTTPHeaderFieldsKey": ["User-Agent": ITClient.iosUserAgent]])
+            let asset = AVURLAsset(url: s.hlsURL, options: ["AVURLAssetHTTPHeaderFieldsKey": ["User-Agent": s.userAgent]])
             let item = AVPlayerItem(asset: asset)
             item.preferredForwardBufferDuration = 0
             apply(quality, to: item)
