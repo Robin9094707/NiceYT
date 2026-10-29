@@ -94,6 +94,8 @@ struct CommentPage: Sendable {
     var continuation: String?
     var sortOptions: [(title: String, token: String)] = []
     var countText: String?
+    /// InnerTube endpoint that served this page (continuations use the same one).
+    var endpoint = "next"
 }
 
 struct CaptionTrack: Identifiable, Hashable, Sendable {

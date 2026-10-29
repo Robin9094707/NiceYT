@@ -36,6 +36,7 @@ struct MiniPlayerView: View {
                         .frame(width: 32, height: 32)
                 }
                 .buttonStyle(.plain)
+                .accessibilityLabel(player.isPlaying ? "Pause" : "Abspielen")
 
                 if placement != .inline {
                     Button { player.playNext() } label: {
@@ -44,6 +45,7 @@ struct MiniPlayerView: View {
                             .frame(width: 32, height: 32)
                     }
                     .buttonStyle(.plain)
+                    .accessibilityLabel("Nächstes Video")
 
                     Button { withAnimation { player.close() } } label: {
                         Image(systemName: "xmark")
@@ -51,20 +53,18 @@ struct MiniPlayerView: View {
                             .frame(width: 28, height: 32)
                     }
                     .buttonStyle(.plain)
+                    .accessibilityLabel("Schließen")
                 }
             }
             .padding(.horizontal, 10)
             .overlay(alignment: .bottom) {
-                GeometryReader { geo in
-                    Capsule()
-                        .fill(.tint)
-                        .frame(width: geo.size.width * player.progress, height: 2)
-                }
-                .frame(height: 2)
-                .padding(.horizontal, 14)
+                MiniProgressBar(live: player.live)
+                    .frame(height: 2)
+                    .padding(.horizontal, 14)
             }
             .contentShape(Rectangle())
-            .onTapGesture { player.isPresented = true }
+            .onTapGesture { player.presentPlayer() }
+            .accessibilityAction(named: "Player öffnen") { player.presentPlayer() }
         } else {
             HStack {
                 Image(systemName: "play.rectangle.fill").foregroundStyle(.tint)
@@ -72,6 +72,19 @@ struct MiniPlayerView: View {
                 Spacer()
             }
             .padding(.horizontal, 14)
+        }
+    }
+}
+
+/// Observes only the playback progress, so the rest of the mini player stays still.
+private struct MiniProgressBar: View {
+    @ObservedObject var live: PlayerLive
+
+    var body: some View {
+        GeometryReader { geo in
+            Capsule()
+                .fill(.tint)
+                .frame(width: geo.size.width * live.progress, height: 2)
         }
     }
 }

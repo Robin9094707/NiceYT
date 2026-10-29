@@ -42,6 +42,8 @@ final class FeedLoader: ObservableObject {
     @Published private(set) var isLoading = false
     @Published private(set) var error: String?
     @Published private(set) var hasMore = false
+    /// Increments with every loaded page, so the "load more" trigger re-arms itself.
+    @Published private(set) var pageCount = 0
     private var continuation: String?
     private var loadingMore = false
     private let first: () async throws -> FeedPage
@@ -64,6 +66,7 @@ final class FeedLoader: ObservableObject {
             items = page.items
             continuation = page.continuation
             hasMore = continuation != nil
+            pageCount += 1
         } catch is CancellationError {
         } catch {
             if (error as? URLError)?.code != .cancelled {
@@ -80,24 +83,82 @@ final class FeedLoader: ObservableObject {
         guard let page = try? await more(token) else { return }
         let existing = Set(items.map(\.id))
         items += page.items.filter { !existing.contains($0.id) }
-        continuation = page.continuation
+        // Stop when YouTube keeps returning the same token.
+        continuation = page.continuation == token ? nil : page.continuation
         hasMore = continuation != nil
+        pageCount += 1
     }
 }
 
 // MARK: - Images
 
+/// Memory cache + de-duplicated downloads for thumbnails and avatars
+/// (disk caching comes from the shared URLCache).
+@MainActor
+final class ImagePipeline {
+    static let shared = ImagePipeline()
+    private let cache = NSCache<NSURL, UIImage>()
+    private var running: [URL: Task<UIImage?, Never>] = [:]
+
+    private init() {
+        cache.countLimit = 600
+        cache.totalCostLimit = 160 * 1024 * 1024
+    }
+
+    func cached(_ url: URL) -> UIImage? { cache.object(forKey: url as NSURL) }
+
+    func load(_ url: URL) async -> UIImage? {
+        if let image = cached(url) { return image }
+        if let task = running[url] { return await task.value }
+        let task = Task<UIImage?, Never> {
+            var request = URLRequest(url: url, cachePolicy: .returnCacheDataElseLoad, timeoutInterval: 20)
+            request.setValue("image/webp,image/jpeg,image/*", forHTTPHeaderField: "Accept")
+            guard let (data, response) = try? await URLSession.shared.data(for: request),
+                  ((response as? HTTPURLResponse)?.statusCode ?? 200) < 400,
+                  let image = UIImage(data: data) else { return nil }
+            return await image.byPreparingForDisplay() ?? image
+        }
+        running[url] = task
+        let image = await task.value
+        running[url] = nil
+        if let image {
+            let cost = Int(image.size.width * image.size.height * image.scale * image.scale * 4)
+            cache.setObject(image, forKey: url as NSURL, cost: cost)
+        }
+        return image
+    }
+}
+
 struct RemoteImage: View {
     let url: URL?
     var contentMode: ContentMode = .fill
+    @State private var image: UIImage?
+    @State private var loadedURL: URL?
 
     var body: some View {
-        AsyncImage(url: url, transaction: Transaction(animation: .easeOut(duration: 0.25))) { phase in
-            switch phase {
-            case .success(let image):
-                image.resizable().aspectRatio(contentMode: contentMode)
-            default:
+        let shown = loadedURL == url ? image : url.flatMap { ImagePipeline.shared.cached($0) }
+        ZStack {
+            if let shown {
+                Image(uiImage: shown)
+                    .resizable()
+                    .aspectRatio(contentMode: contentMode)
+                    .transition(.opacity)
+            } else {
                 Rectangle().fill(.quaternary)
+            }
+        }
+        .task(id: url) {
+            guard let url else { image = nil; loadedURL = nil; return }
+            if let hit = ImagePipeline.shared.cached(url) {
+                image = hit
+                loadedURL = url
+                return
+            }
+            let loaded = await ImagePipeline.shared.load(url)
+            guard !Task.isCancelled else { return }
+            withAnimation(.easeOut(duration: 0.2)) {
+                image = loaded
+                loadedURL = url
             }
         }
     }
@@ -253,13 +314,20 @@ struct VideoMenu: View {
         if account.isSignedIn {
             Button("Später ansehen", systemImage: "clock") {
                 Task {
-                    try? await YouTube.addToWatchLater(video.id)
-                    player.showToast("Zu „Später ansehen“ hinzugefügt")
+                    do {
+                        try await YouTube.addToWatchLater(video.id)
+                        player.showToast("Zu „Später ansehen“ hinzugefügt")
+                    } catch {
+                        player.showToast(error.localizedDescription)
+                    }
                 }
             }
         }
         ShareLink(item: video.shareURL) { Label("Teilen", systemImage: "square.and.arrow.up") }
-        Button("Link kopieren", systemImage: "link") { UIPasteboard.general.url = video.shareURL }
+        Button("Link kopieren", systemImage: "link") {
+            UIPasteboard.general.url = video.shareURL
+            player.showToast("Link kopiert")
+        }
     }
 }
 
@@ -361,12 +429,14 @@ struct PlaylistRow: View {
 // MARK: - Feed
 
 /// Renders a list of feed items; consecutive Shorts are grouped into a horizontal shelf.
+/// On wide screens (landscape, iPad) videos are laid out in several columns.
 struct FeedSections: View {
     @EnvironmentObject private var settings: AppSettings
     @EnvironmentObject private var shorts: ShortsModel
     let items: [FeedItem]
     var compact = false
     var playAsQueue = false
+    var columns = 1
 
     private var queue: [Video]? {
         guard playAsQueue else { return nil }
@@ -375,10 +445,12 @@ struct FeedSections: View {
 
     private enum Section: Identifiable {
         case item(FeedItem)
+        case row([FeedItem])
         case shorts([Video])
         var id: String {
             switch self {
             case .item(let i): return i.id
+            case .row(let r): return "row-" + (r.first?.id ?? "")
             case .shorts(let v): return "shelf-" + (v.first?.id ?? "")
             }
         }
@@ -387,17 +459,31 @@ struct FeedSections: View {
     private var sections: [Section] {
         var out: [Section] = []
         var shelf: [Video] = []
+        var row: [FeedItem] = []
+        func flushRow() {
+            guard !row.isEmpty else { return }
+            out.append(columns > 1 ? .row(row) : .item(row[0]))
+            row = []
+        }
         for item in items {
             if case .short(let v) = item {
                 if !settings.hideShorts { shelf.append(v) }
                 continue
             }
-            if shelf.count > 0 {
+            if !shelf.isEmpty {
+                flushRow()
                 out.append(.shorts(shelf))
                 shelf = []
             }
-            out.append(.item(item))
+            if columns > 1, case .video = item {
+                row.append(item)
+                if row.count == columns { flushRow() }
+            } else {
+                flushRow()
+                out.append(.item(item))
+            }
         }
+        flushRow()
         if !shelf.isEmpty { out.append(.shorts(shelf)) }
         return out
     }
@@ -406,19 +492,32 @@ struct FeedSections: View {
         ForEach(sections) { section in
             switch section {
             case .item(let item):
-                switch item {
-                case .video(let v):
-                    if compact { VideoRow(video: v, queue: queue) } else { VideoCard(video: v) }
-                case .channel(let c):
-                    ChannelRow(channel: c)
-                case .playlist(let p):
-                    PlaylistRow(playlist: p)
-                case .short:
-                    EmptyView()
+                cell(item)
+            case .row(let row):
+                HStack(alignment: .top, spacing: compact ? 14 : 18) {
+                    ForEach(row) { item in
+                        cell(item).frame(maxWidth: .infinity, alignment: .topLeading)
+                    }
+                    ForEach(row.count..<columns, id: \.self) { _ in
+                        Color.clear.frame(maxWidth: .infinity, maxHeight: 1)
+                    }
                 }
             case .shorts(let videos):
                 ShortsShelf(videos: videos) { v in shorts.open(v, from: videos) }
             }
+        }
+    }
+
+    @ViewBuilder private func cell(_ item: FeedItem) -> some View {
+        switch item {
+        case .video(let v):
+            if compact { VideoRow(video: v, queue: queue) } else { VideoCard(video: v) }
+        case .channel(let c):
+            ChannelRow(channel: c)
+        case .playlist(let p):
+            PlaylistRow(playlist: p)
+        case .short:
+            EmptyView()
         }
     }
 }
@@ -451,6 +550,14 @@ struct FeedScroll<Header: View>: View {
     var emptyText = "Nichts gefunden"
     var playAsQueue = false
     @ViewBuilder var header: () -> Header
+    @State private var width: CGFloat = 0
+
+    /// Number of columns that fit the current width (1 on a portrait iPhone).
+    private var columns: Int {
+        let usable = width - 32
+        guard usable > 0 else { return 1 }
+        return compact ? (usable > 760 ? 2 : 1) : max(1, min(4, Int((usable + 18) / 340)))
+    }
 
     var body: some View {
         ScrollView {
@@ -464,18 +571,19 @@ struct FeedScroll<Header: View>: View {
                     ContentUnavailableView(emptyText, systemImage: "play.slash")
                         .padding(.top, 60)
                 } else {
-                    FeedSections(items: loader.items, compact: compact, playAsQueue: playAsQueue)
+                    FeedSections(items: loader.items, compact: compact, playAsQueue: playAsQueue, columns: columns)
                     if loader.hasMore {
                         ProgressView()
                             .frame(maxWidth: .infinity)
                             .padding()
-                            .task { await loader.loadMore() }
+                            .task(id: loader.pageCount) { await loader.loadMore() }
                     }
                 }
             }
             .padding(.horizontal, 16)
             .padding(.bottom, 24)
         }
+        .onGeometryChange(for: CGFloat.self) { $0.size.width } action: { width = $0 }
         .refreshable { await loader.load(force: true) }
         .task { await loader.load() }
     }

@@ -39,6 +39,9 @@ struct LibraryView: View {
             .sheet(isPresented: $showSettings) { SettingsView() }
             .withRoutes()
             .task { if account.isSignedIn { await history.load() } }
+            .onChange(of: account.isSignedIn) { _, signedIn in
+                if signedIn { Task { await history.load(force: true) } }
+            }
             .refreshable {
                 await account.refresh()
                 await history.load(force: true)

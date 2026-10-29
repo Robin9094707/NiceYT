@@ -113,8 +113,10 @@ final class AppSettings: ObservableObject {
             "swipeVolume": false,
             "resumePlayback": true,
             "accent": AccentChoice.red.rawValue,
-            "hl": Locale.current.language.languageCode?.identifier ?? "de",
-            "gl": Locale.current.region?.identifier ?? "DE",
+            // The app is German, so YouTube content (dates, view counts, comment sorting …)
+            // is requested in German as well; it can be changed in the settings.
+            "hl": "de",
+            "gl": Self.defaultRegion,
             "sponsorCategories": ["sponsor", "selfpromo", "interaction"]
         ])
         quality = VideoQuality(rawValue: d.string(forKey: "quality") ?? "") ?? .auto
@@ -135,6 +137,29 @@ final class AppSettings: ObservableObject {
         region = d.string(forKey: "gl") ?? "DE"
         sponsorCategories = Set(d.stringArray(forKey: "sponsorCategories") ?? [])
     }
+
+    private static var defaultRegion: String {
+        let region = Locale.current.region?.identifier ?? "DE"
+        return ["DE", "AT", "CH", "LI", "LU"].contains(region) ? region : "DE"
+    }
+
+    struct Option: Hashable, Identifiable {
+        let code: String
+        let name: String
+        var id: String { code }
+        init(_ code: String, _ name: String) { self.code = code; self.name = name }
+    }
+
+    static let languages: [Option] = [
+        .init("de", "Deutsch"), .init("en", "Englisch"), .init("fr", "Französisch"), .init("es", "Spanisch"),
+        .init("it", "Italienisch"), .init("nl", "Niederländisch"), .init("pl", "Polnisch"), .init("tr", "Türkisch")
+    ]
+
+    static let regions: [Option] = [
+        .init("DE", "Deutschland"), .init("AT", "Österreich"), .init("CH", "Schweiz"), .init("LU", "Luxemburg"),
+        .init("US", "USA"), .init("GB", "Vereinigtes Königreich"), .init("FR", "Frankreich"), .init("IT", "Italien"),
+        .init("ES", "Spanien"), .init("NL", "Niederlande"), .init("PL", "Polen"), .init("TR", "Türkei")
+    ]
 
     static var hl: String { UserDefaults.standard.string(forKey: "hl") ?? "de" }
     static var gl: String { UserDefaults.standard.string(forKey: "gl") ?? "DE" }

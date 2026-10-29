@@ -9,6 +9,7 @@ struct RootView: View {
     @EnvironmentObject private var shorts: ShortsModel
     @EnvironmentObject private var settings: AppSettings
     @EnvironmentObject private var account: AccountStore
+    @Environment(\.scenePhase) private var scenePhase
     @State private var tab: AppTab = .home
 
     var body: some View {
@@ -31,14 +32,17 @@ struct RootView: View {
         }
         .tabBarMinimizeBehavior(.onScrollDown)
         .modifier(MiniPlayerAccessory(enabled: player.current != nil && tab != .shorts))
-        .sheet(isPresented: $player.isPresented) {
-            WatchView()
+        // Full-screen cover instead of a sheet: only that way the video can really use
+        // the whole screen (landscape, swipe-up fullscreen). Dragging the video down
+        // minimises it again.
+        .fullScreenCover(isPresented: $player.isPresented) {
+            PlayerContainer()
                 .environmentObject(player)
                 .environmentObject(shorts)
                 .environmentObject(settings)
                 .environmentObject(account)
                 .tint(settings.accent.color)
-                .presentationDragIndicator(.visible)
+                .presentationBackground(.clear)
         }
         .overlay(alignment: .top) {
             if let toast = player.toast, !player.isPresented {
@@ -48,22 +52,41 @@ struct RootView: View {
                     .glassEffect(.regular, in: .capsule)
                     .padding(.top, 4)
                     .transition(.move(edge: .top).combined(with: .opacity))
+                    .allowsHitTesting(false)
             }
         }
         .onChange(of: tab) { _, new in
-            shorts.setActive(new == .shorts)
             if new == .shorts { player.player.pause() }
+            updateShorts()
         }
         .onChange(of: shorts.openRequest) { tab = .shorts }
         .onChange(of: player.isPresented) { _, presented in
-            if presented { shorts.setActive(false) } else { player.setFullscreen(false) }
+            if !presented {
+                if player.isFullscreen { player.setFullscreen(false) }
+                // Back on the Shorts tab the Shorts take over again.
+                if tab == .shorts { player.player.pause() }
+            }
+            updateShorts()
+        }
+        .onChange(of: scenePhase) { _, phase in
+            if phase == .active { updateShorts() }
         }
         .onOpenURL { url in
             if let id = YouTubeLink.videoId(from: url.absoluteString) {
                 player.play(Video(id: id, title: ""))
             }
         }
+        .task {
+            // Prepare the signature/n solver in the background so the first video starts fast.
+            Task.detached(priority: .utility) { await NSolver.shared.prewarm() }
+        }
         .tint(settings.accent.color)
+    }
+
+    private func updateShorts() {
+        let visible = tab == .shorts && !player.isPresented
+        shorts.setTabActive(visible)
+        Orientation.setPortraitOnly(visible)
     }
 }
 

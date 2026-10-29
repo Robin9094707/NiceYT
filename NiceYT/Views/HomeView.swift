@@ -2,6 +2,7 @@ import SwiftUI
 
 struct HomeView: View {
     @EnvironmentObject private var account: AccountStore
+    @EnvironmentObject private var settings: AppSettings
     @State private var topic: Topic = .forYou
     @StateObject private var loaders = HomeLoaders()
     @State private var showAccount = false
@@ -97,6 +98,8 @@ struct HomeView: View {
             .withRoutes()
         }
         .onChange(of: account.isSignedIn) { loaders.reset() }
+        .onChange(of: settings.language) { loaders.reset() }
+        .onChange(of: settings.region) { loaders.reset() }
     }
 }
 

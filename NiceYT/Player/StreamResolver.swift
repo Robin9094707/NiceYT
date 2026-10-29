@@ -15,15 +15,25 @@ struct PreparedStream {
 enum StreamResolver {
     static let probeTimeout: TimeInterval = 12
 
-    /// Tries all sources in order and returns the first one `accept` agrees to play.
+    /// Tries the sources in order and returns the first one `accept` agrees to play.
+    /// A fast pass uses the clients that answer first; only if none of them works are
+    /// all clients (and finally the web player) asked.
     @MainActor
     static func firstPlayable(_ videoId: String, accept: (PreparedStream) async -> Bool) async -> PreparedStream? {
         DebugLog.log("▶︎ Video \(videoId)")
-        let infos = await YouTube.streamCandidates(videoId)
-        for info in infos {
+        var tried = Set<String>()
+        for thorough in [false, true] {
+            let result = await YouTube.streamCandidates(videoId, thorough: thorough)
+            for info in result.candidates {
+                if Task.isCancelled { return nil }
+                guard tried.insert(info.source + (info.isHLS ? " HLS" : "")).inserted else { continue }
+                if let prepared = await prepare(info), await accept(prepared) { return prepared }
+            }
+            if result.complete { break }
             if Task.isCancelled { return nil }
-            if let prepared = await prepare(info), await accept(prepared) { return prepared }
+            DebugLog.log("↻ Alle Clients abfragen")
         }
+        if Task.isCancelled { return nil }
         DebugLog.log("↻ Fallback: Web-Player-Extraktion")
         if let info = await WebViewExtractor.shared.extract(videoId),
            let prepared = await prepare(info), await accept(prepared) {
@@ -31,6 +41,36 @@ enum StreamResolver {
         }
         DebugLog.log("✖︎ Keine abspielbare Quelle für \(videoId)")
         return nil
+    }
+
+    /// Waits until AVPlayer reports the item as playable (or failed / timed out).
+    @MainActor
+    static func waitUntilReady(_ item: AVPlayerItem, label: String, timeout: TimeInterval = 12) async -> Bool {
+        let start = Date()
+        while Date().timeIntervalSince(start) < timeout {
+            if Task.isCancelled { return false }
+            switch item.status {
+            case .readyToPlay:
+                DebugLog.log("✔︎ Wiedergabe über \(label) nach \(Int(Date().timeIntervalSince(start) * 1000)) ms")
+                return true
+            case .failed:
+                let e = item.error as NSError?
+                DebugLog.log("✖︎ \(label): AVPlayer-Fehler \(e?.domain ?? "") \(e?.code ?? 0) – \(e?.localizedDescription ?? "")")
+                logErrorEvents(item)
+                return false
+            default:
+                try? await Task.sleep(for: .milliseconds(100))
+            }
+        }
+        DebugLog.log("✖︎ \(label): Zeitüberschreitung beim Laden")
+        logErrorEvents(item)
+        return false
+    }
+
+    private static func logErrorEvents(_ item: AVPlayerItem) {
+        for event in item.errorLog()?.events.suffix(4) ?? [] {
+            DebugLog.log("   ErrorLog \(event.errorStatusCode) \(event.errorDomain): \(event.errorComment ?? "") \(DebugLog.short(event.uri.flatMap(URL.init(string:))))")
+        }
     }
 
     static func headers(for info: StreamInfo) -> [String: String] {

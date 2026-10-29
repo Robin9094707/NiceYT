@@ -3,16 +3,22 @@ import SwiftUI
 @MainActor
 final class CommentsModel: ObservableObject {
     @Published var comments: [Comment] = []
-    @Published var isLoading = false
+    @Published var isLoading = true
     @Published var error: String?
     @Published var sortOptions: [(title: String, token: String)] = []
     @Published var sortIndex = 0
     @Published var countText: String?
+    /// Increments with every loaded page, so the "load more" trigger re-arms itself.
+    @Published private(set) var pageCount = 0
     private var continuation: String?
     private var loadingMore = false
+    private(set) var endpoint: String?
     let token: String
 
-    init(token: String) { self.token = token }
+    init(token: String, endpoint: String? = nil) {
+        self.token = token
+        self.endpoint = endpoint
+    }
 
     var hasMore: Bool { continuation != nil }
 
@@ -20,13 +26,16 @@ final class CommentsModel: ObservableObject {
         isLoading = true
         error = nil
         do {
-            let page = try await YouTube.comments(token ?? self.token)
+            let page = try await YouTube.comments(token ?? self.token, endpoint: endpoint)
+            endpoint = page.endpoint
             comments = page.comments
             continuation = page.continuation
             if !page.sortOptions.isEmpty { sortOptions = page.sortOptions }
             if let c = page.countText { countText = c }
+            pageCount += 1
+        } catch is CancellationError {
         } catch {
-            self.error = error.localizedDescription
+            if (error as? URLError)?.code != .cancelled { self.error = error.localizedDescription }
         }
         isLoading = false
     }
@@ -35,15 +44,18 @@ final class CommentsModel: ObservableObject {
         guard let c = continuation, !loadingMore else { return }
         loadingMore = true
         defer { loadingMore = false }
-        guard let page = try? await YouTube.comments(c) else { return }
+        guard let page = try? await YouTube.comments(c, endpoint: endpoint) else { return }
         let existing = Set(comments.map(\.id))
         comments += page.comments.filter { !existing.contains($0.id) }
         continuation = page.continuation
+        pageCount += 1
     }
 
     func sort(_ index: Int) async {
-        guard sortOptions.indices.contains(index) else { return }
+        guard sortOptions.indices.contains(index), index != sortIndex || comments.isEmpty else { return }
         sortIndex = index
+        comments = []
+        continuation = nil
         await load(sortOptions[index].token)
     }
 }
@@ -52,8 +64,8 @@ struct CommentsView: View {
     @StateObject private var model: CommentsModel
     let count: String?
 
-    init(token: String, count: String?) {
-        _model = StateObject(wrappedValue: CommentsModel(token: token))
+    init(token: String, count: String?, endpoint: String? = nil) {
+        _model = StateObject(wrappedValue: CommentsModel(token: token, endpoint: endpoint))
         self.count = count
     }
 
@@ -74,10 +86,17 @@ struct CommentsView: View {
                         ProgressView().frame(maxWidth: .infinity).padding(.top, 40)
                     } else if let e = model.error, model.comments.isEmpty {
                         ErrorState(message: e) { Task { await model.load() } }
+                    } else if model.comments.isEmpty && model.pageCount > 0 {
+                        ContentUnavailableView("Noch keine Kommentare", systemImage: "text.bubble",
+                                               description: Text("Sei der Erste, der etwas dazu schreibt."))
+                            .padding(.top, 30)
                     } else {
-                        ForEach(model.comments) { c in CommentRow(comment: c) }
+                        ForEach(model.comments) { c in CommentRow(comment: c, endpoint: model.endpoint) }
                         if model.hasMore {
-                            ProgressView().frame(maxWidth: .infinity).task { await model.loadMore() }
+                            ProgressView()
+                                .frame(maxWidth: .infinity)
+                                .padding(.vertical, 8)
+                                .task(id: model.pageCount) { await model.loadMore() }
                         }
                     }
                 }
@@ -100,6 +119,7 @@ struct CommentsView: View {
 
 struct CommentRow: View {
     let comment: Comment
+    var endpoint: String?
     var showReplies = true
     @State private var replies: [Comment] = []
     @State private var repliesToken: String?
@@ -150,7 +170,7 @@ struct CommentRow: View {
                 }
                 if expanded {
                     VStack(alignment: .leading, spacing: 14) {
-                        ForEach(replies) { r in CommentRow(comment: r, showReplies: false) }
+                        ForEach(replies) { r in CommentRow(comment: r, endpoint: endpoint, showReplies: false) }
                         if repliesToken != nil {
                             Button("Weitere Antworten") { Task { await loadReplies() } }
                                 .font(.caption.weight(.semibold))
@@ -177,8 +197,9 @@ struct CommentRow: View {
         guard let token = repliesToken else { return }
         loading = true
         defer { loading = false }
-        guard let page = try? await YouTube.comments(token) else { return }
-        replies += page.comments
+        guard let page = try? await YouTube.comments(token, endpoint: endpoint) else { return }
+        let existing = Set(replies.map(\.id))
+        replies += page.comments.filter { !existing.contains($0.id) }
         repliesToken = page.continuation
     }
 }

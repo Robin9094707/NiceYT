@@ -10,6 +10,17 @@ struct CaptionCue: Hashable {
     let text: String
 }
 
+/// Values that change many times per second. Kept out of `PlayerModel` so that the
+/// feeds (which observe the model) don't re-render while a video is playing.
+@MainActor
+final class PlayerLive: ObservableObject {
+    @Published var progress: Double = 0
+    @Published var caption: String?
+    @Published var hud: PlayerModel.GestureHUD?
+    /// Vertical offset while the player is dragged down to minimise it.
+    @Published var dragOffset: CGFloat = 0
+}
+
 /// Owns the single AVPlayer for long-form videos and everything around it
 /// (metadata, SponsorBlock, captions, remote commands, mini player state).
 @MainActor
@@ -23,16 +34,15 @@ final class PlayerModel: NSObject, ObservableObject {
     @Published private(set) var isLoading = false
     @Published private(set) var error: String?
     @Published private(set) var isPlaying = false
-    @Published private(set) var progress: Double = 0
     @Published var toast: String?
     @Published var likeStatus: String?
     @Published var isSubscribed = false
     @Published private(set) var captionTrack: CaptionTrack?
-    @Published private(set) var currentCaption: String?
     @Published private(set) var quality: VideoQuality = AppSettings.shared.quality
     @Published private(set) var sourceLabel: String?
     @Published var isFullscreen = false
-    @Published private(set) var hud: GestureHUD?
+    /// Zoom to fill the screen in fullscreen (pinch gesture).
+    @Published var videoFill = false
     @Published private(set) var queue: [Video] = []
 
     enum GestureHUD: Equatable {
@@ -42,6 +52,7 @@ final class PlayerModel: NSObject, ObservableObject {
     }
 
     let player = AVPlayer()
+    let live = PlayerLive()
     private let settings = AppSettings.shared
     private var captionCues: [CaptionCue] = []
     private var timeObserver: Any?
@@ -66,15 +77,17 @@ final class PlayerModel: NSObject, ObservableObject {
         }
 
         player.publisher(for: \.timeControlStatus)
-            .receive(on: RunLoop.main)
+            .receive(on: DispatchQueue.main)
             .sink { [weak self] status in
-                self?.isPlaying = status == .playing
-                self?.updateNowPlaying()
+                guard let self else { return }
+                let playing = status == .playing
+                if playing != self.isPlaying { self.isPlaying = playing }
+                self.updateNowPlaying()
             }
             .store(in: &cancellables)
 
         NotificationCenter.default.publisher(for: AVPlayerItem.didPlayToEndTimeNotification)
-            .receive(on: RunLoop.main)
+            .receive(on: DispatchQueue.main)
             .sink { [weak self] note in
                 guard let self, (note.object as? AVPlayerItem) === self.player.currentItem else { return }
                 self.didFinish()
@@ -82,7 +95,7 @@ final class PlayerModel: NSObject, ObservableObject {
             .store(in: &cancellables)
 
         NotificationCenter.default.publisher(for: AVPlayerItem.newErrorLogEntryNotification)
-            .receive(on: RunLoop.main)
+            .receive(on: DispatchQueue.main)
             .sink { [weak self] note in
                 guard let item = note.object as? AVPlayerItem, item === self?.player.currentItem,
                       let event = item.errorLog()?.events.last else { return }
@@ -91,7 +104,7 @@ final class PlayerModel: NSObject, ObservableObject {
             .store(in: &cancellables)
 
         NotificationCenter.default.publisher(for: AVPlayerItem.failedToPlayToEndTimeNotification)
-            .receive(on: RunLoop.main)
+            .receive(on: DispatchQueue.main)
             .sink { note in
                 let e = note.userInfo?[AVPlayerItemFailedToPlayToEndTimeErrorKey] as? NSError
                 DebugLog.log("✖︎ Abbruch: \(e?.domain ?? "") \(e?.code ?? 0) \(e?.localizedDescription ?? "")")
@@ -100,7 +113,7 @@ final class PlayerModel: NSObject, ObservableObject {
 
         settings.$backgroundPlay
             .dropFirst()
-            .receive(on: RunLoop.main)
+            .receive(on: DispatchQueue.main)
             .sink { [weak self] _ in self?.applyBackgroundPolicy() }
             .store(in: &cancellables)
 
@@ -122,7 +135,7 @@ final class PlayerModel: NSObject, ObservableObject {
     func play(_ video: Video, present: Bool = true, keepQueue: Bool = false) {
         if !keepQueue, !queue.contains(where: { $0.id == video.id }) { queue = [] }
         if current?.id == video.id, error == nil {
-            if present { isPresented = true }
+            if present { presentPlayer() }
             player.play()
             return
         }
@@ -134,10 +147,10 @@ final class PlayerModel: NSObject, ObservableObject {
         segments = []
         error = nil
         isLoading = true
-        progress = 0
+        live.progress = 0
+        live.caption = nil
         captionCues = []
         captionTrack = nil
-        currentCaption = nil
         skipped = []
         watchedMarked = false
         artwork = nil
@@ -146,9 +159,16 @@ final class PlayerModel: NSObject, ObservableObject {
         quality = settings.quality
         sourceLabel = nil
         lastSavedPosition = 0
-        if present { isPresented = true }
+        if present { presentPlayer() }
+        player.pause()
         player.replaceCurrentItem(with: nil)
+        activeProxy = nil
         loadTask = Task { await load(video) }
+    }
+
+    func presentPlayer() {
+        live.dragOffset = 0
+        isPresented = true
     }
 
     func retry() {
@@ -226,42 +246,22 @@ final class PlayerModel: NSObject, ObservableObject {
     /// Hands a candidate to AVPlayer and waits until it is really playable.
     private func tryPlay(_ candidate: PreparedStream) async -> Bool {
         let item = AVPlayerItem(asset: candidate.asset)
-        item.preferredForwardBufferDuration = 0
         apply(quality, to: item)
         item.externalMetadata = metadataItems(title: candidate.info.title, artist: candidate.info.author)
         activeProxy = candidate.proxy
+        // A resumed video only starts after the seek, so its beginning doesn't flash up.
+        let id = current?.id
+        let resume = settings.resumePlayback ? id.flatMap(PositionStore.position) : nil
         player.replaceCurrentItem(with: item)
-        player.play()
-        let start = Date()
-        while Date().timeIntervalSince(start) < 15 {
-            if Task.isCancelled { return false }
-            switch item.status {
-            case .readyToPlay:
-                DebugLog.log("✔︎ Wiedergabe über \(candidate.label) nach \(Int(Date().timeIntervalSince(start) * 1000)) ms")
-                if settings.resumePlayback, let id = current?.id, let pos = PositionStore.position(id) {
-                    await player.seek(to: CMTime(seconds: pos, preferredTimescale: 600))
-                    let m = Int(pos) / 60, sec = Int(pos) % 60
-                    showToast(String(format: "Fortgesetzt bei %d:%02d", m, sec))
-                }
-                return true
-            case .failed:
-                let e = item.error as NSError?
-                DebugLog.log("✖︎ \(candidate.label): AVPlayer-Fehler \(e?.domain ?? "") \(e?.code ?? 0) – \(e?.localizedDescription ?? "")")
-                logErrorEvents(item)
-                return false
-            default:
-                try? await Task.sleep(for: .milliseconds(200))
-            }
+        if resume == nil { player.play() }
+        guard await StreamResolver.waitUntilReady(item, label: candidate.label) else { return false }
+        if let resume {
+            _ = await player.seek(to: CMTime(seconds: resume, preferredTimescale: 600))
+            if current?.id == id { player.play() }
+            let m = Int(resume) / 60, sec = Int(resume) % 60
+            showToast(String(format: "Fortgesetzt bei %d:%02d", m, sec))
         }
-        DebugLog.log("✖︎ \(candidate.label): Zeitüberschreitung beim Laden")
-        logErrorEvents(item)
-        return false
-    }
-
-    private func logErrorEvents(_ item: AVPlayerItem) {
-        for event in item.errorLog()?.events.suffix(4) ?? [] {
-            DebugLog.log("   ErrorLog \(event.errorStatusCode) \(event.errorDomain): \(event.errorComment ?? "") \(DebugLog.short(event.uri.flatMap(URL.init(string:))))")
-        }
+        return true
     }
 
     // MARK: Controls
@@ -277,9 +277,14 @@ final class PlayerModel: NSObject, ObservableObject {
         current = nil
         stream = nil
         details = nil
+        error = nil
+        isLoading = false
         queue = []
+        activeProxy = nil
+        live.progress = 0
+        live.caption = nil
         isPresented = false
-        setFullscreen(false)
+        if isFullscreen { setFullscreen(false) }
         MPNowPlayingInfoCenter.default().nowPlayingInfo = nil
     }
 
@@ -306,24 +311,46 @@ final class PlayerModel: NSObject, ObservableObject {
         let step = Double(settings.seekInterval)
         seek(by: forward ? step : -step)
         let previous: Int
-        if case .seek(let v) = hud, (v > 0) == forward { previous = v } else { previous = 0 }
+        if case .seek(let v) = live.hud, (v > 0) == forward { previous = v } else { previous = 0 }
         showHUD(.seek(previous + (forward ? Int(step) : -Int(step))))
     }
 
     func showHUD(_ value: GestureHUD) {
         hudTask?.cancel()
-        hud = value
+        live.hud = value
         hudTask = Task {
             try? await Task.sleep(for: .milliseconds(900))
             guard !Task.isCancelled else { return }
-            withAnimation(.easeOut) { hud = nil }
+            withAnimation(.easeOut) { live.hud = nil }
         }
     }
 
+    /// Enters or leaves fullscreen. On iPhone this also rotates the interface;
+    /// leaving works as well when the landscape layout came from turning the device.
     func setFullscreen(_ on: Bool) {
-        guard on != isFullscreen else { return }
-        isFullscreen = on
-        Orientation.set(landscape: on)
+        let wasFullscreen = isFullscreen
+        withAnimation(.smooth(duration: 0.3)) {
+            isFullscreen = on
+            if !on { videoFill = false }
+        }
+        if on || wasFullscreen || Orientation.isLandscape {
+            Orientation.set(landscape: on)
+        }
+    }
+
+    /// The device was turned back to portrait while in fullscreen.
+    func fullscreenEndedByRotation() {
+        guard isFullscreen else { return }
+        withAnimation(.smooth(duration: 0.3)) {
+            isFullscreen = false
+            videoFill = false
+        }
+    }
+
+    /// Minimises the player into the mini player.
+    func minimize() {
+        if isFullscreen { setFullscreen(false) }
+        isPresented = false
     }
 
     func setQuality(_ q: VideoQuality) {
@@ -414,7 +441,7 @@ final class PlayerModel: NSObject, ObservableObject {
     func selectCaption(_ track: CaptionTrack?) async {
         captionTrack = track
         captionCues = []
-        currentCaption = nil
+        live.caption = nil
         guard let track,
               var comps = URLComponents(url: track.url, resolvingAgainstBaseURL: false) else { return }
         comps.queryItems = (comps.queryItems ?? []).filter { $0.name != "fmt" } + [.init(name: "fmt", value: "json3")]
@@ -434,7 +461,8 @@ final class PlayerModel: NSObject, ObservableObject {
     private func tick(_ time: Double) {
         guard time.isFinite else { return }
         if let duration = player.currentItem?.duration.seconds, duration.isFinite, duration > 0 {
-            progress = time / duration
+            let p = min(1, max(0, time / duration))
+            if abs(p - live.progress) > 0.0005 { live.progress = p }
             if abs(time - lastSavedPosition) > 5, let id = current?.id, stream?.isLive != true {
                 lastSavedPosition = time
                 PositionStore.save(id, position: time, duration: duration)
@@ -453,7 +481,7 @@ final class PlayerModel: NSObject, ObservableObject {
 
         if !captionCues.isEmpty {
             let cue = captionCues.last { time >= $0.start && time < $0.end }
-            if cue?.text != currentCaption { currentCaption = cue?.text }
+            if cue?.text != live.caption { live.caption = cue?.text }
         }
 
         if !watchedMarked, time > 5, let id = current?.id {
@@ -539,7 +567,7 @@ extension PlayerModel: AVPlayerViewControllerDelegate {
     nonisolated func playerViewController(_ playerViewController: AVPlayerViewController,
                                           restoreUserInterfaceForPictureInPictureStopWithCompletionHandler completionHandler: @escaping (Bool) -> Void) {
         Task { @MainActor in
-            self.isPresented = true
+            self.presentPlayer()
             completionHandler(true)
         }
     }

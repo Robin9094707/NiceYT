@@ -14,7 +14,25 @@ final class WebViewExtractor: NSObject, WKScriptMessageHandler, WKNavigationDele
     private var currentId: String?
     private var timeout: Task<Void, Never>?
 
+    private var queueTail: Task<Void, Never>?
+
+    /// Extractions run one after another (there is only one web view).
     func extract(_ videoId: String, timeoutSeconds: Double = 15) async -> StreamInfo? {
+        let previous = queueTail
+        let task = Task { () -> StreamInfo? in
+            await previous?.value
+            if Task.isCancelled { return nil }
+            return await self.run(videoId, timeoutSeconds: timeoutSeconds)
+        }
+        queueTail = Task { _ = await task.value }
+        return await withTaskCancellationHandler {
+            await task.value
+        } onCancel: {
+            task.cancel()
+        }
+    }
+
+    private func run(_ videoId: String, timeoutSeconds: Double) async -> StreamInfo? {
         finish(nil)
         currentId = videoId
         let wv = webView ?? makeWebView()

@@ -4,11 +4,12 @@ options:
   deploymentTarget:
     iOS: "26.0"
   createIntermediateGroups: true
+  developmentLanguage: de
 settings:
   base:
     SWIFT_VERSION: "5.0"
-    MARKETING_VERSION: "1.0.0"
-    CURRENT_PROJECT_VERSION: "1"
+    MARKETING_VERSION: "1.1.0"
+    CURRENT_PROJECT_VERSION: "2"
     DEVELOPMENT_TEAM: ""
 targets:
   NiceYT:
@@ -25,6 +26,9 @@ targets:
       path: NiceYT/Info.plist
       properties:
         CFBundleDisplayName: NiceYT
+        CFBundleDevelopmentRegion: de
+        CFBundleLocalizations: [de]
+        CFBundleAllowMixedLocalizations: false
         CFBundleName: NiceYT
         CFBundleShortVersionString: $(MARKETING_VERSION)
         CFBundleVersion: $(CURRENT_PROJECT_VERSION)

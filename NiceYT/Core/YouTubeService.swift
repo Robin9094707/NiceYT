@@ -86,48 +86,83 @@ enum YouTube {
     // MARK: Watch
 
     /// Queries several player clients in parallel (order follows yt-dlp 2026.10: visionOS,
-    /// TV, embedded web) and returns every usable stream: HLS first, then adaptive
+    /// TV, embedded web) and returns the usable streams: HLS first, then adaptive
     /// video+audio pairs, then progressive MP4.
-    static func streamCandidates(_ videoId: String) async -> [StreamInfo] {
-        let sts = await NSolver.shared.signatureTimestamp()
+    ///
+    /// Unless `thorough` is set it doesn't wait for every client: as soon as the best
+    /// answering client is known (or shortly after the first usable answer) it returns,
+    /// so playback can start quickly. `complete` tells whether all clients answered.
+    static func streamCandidates(_ videoId: String, thorough: Bool = false) async -> (candidates: [StreamInfo], complete: Bool) {
         var clients: [ITClient] = [.visionos, .tv, .webEmbedded, .ios]
         if CookieJar.shared.isSignedIn { clients.append(.webSafari) }
         clients.append(.mweb)
 
-        let results = await withTaskGroup(of: (Int, [StreamInfo]).self) { group in
-            for (index, client) in clients.enumerated() {
-                group.addTask {
-                    var playback: [String: Any] = ["html5Preference": "HTML5_PREF_WANTS"]
-                    if client.needsJSPlayer, let sts { playback["signatureTimestamp"] = sts }
-                    let body: [String: Any] = [
-                        "videoId": videoId,
-                        "contentCheckOk": true,
-                        "racyCheckOk": true,
-                        "playbackContext": ["contentPlaybackContext": playback]
-                    ]
-                    do {
-                        let j = try await api.post("player", body, client: client, authenticated: client.supportsCookies)
-                        let status = j.at("playabilityStatus.status").string ?? "?"
-                        let sd = j["streamingData"]
-                        let formats = sd["formats"].array.count + sd["adaptiveFormats"].array.count
-                        let reason = status == "OK" ? "" : " – " + (j.at("playabilityStatus.reason").string ?? "")
-                        DebugLog.log("[\(client.name)] Status \(status), HLS \(sd["hlsManifestUrl"].exists ? "ja" : "nein"), Formate \(formats)\(reason)")
-                        let meta = try Parser.stream(j, videoId: videoId, client: client)
-                        return (index, await candidates(from: j, meta: meta, client: client))
-                    } catch {
-                        DebugLog.log("[\(client.name)] Fehler: \(error.localizedDescription)")
-                        return (index, [])
-                    }
+        let (stream, continuation) = AsyncStream.makeStream(of: (index: Int, infos: [StreamInfo]).self)
+        let tasks = clients.enumerated().map { index, client in
+            Task {
+                let infos = await playerCandidates(videoId, client: client)
+                continuation.yield((index, infos))
+            }
+        }
+        var grace: Task<Void, Never>?
+        defer {
+            tasks.forEach { $0.cancel() }
+            grace?.cancel()
+            continuation.finish()
+        }
+
+        var collected: [Int: [StreamInfo]] = [:]
+        for await result in stream {
+            if result.index < 0 {
+                if collected.values.contains(where: { !$0.isEmpty }) { break }
+                continue
+            }
+            collected[result.index] = result.infos
+            if collected.count == clients.count { break }
+            if thorough { continue }
+            guard let best = collected.filter({ !$0.value.isEmpty }).keys.min() else { continue }
+            // Every client that would be preferred over `best` has answered → done.
+            if (0..<best).allSatisfy({ collected[$0] != nil }) { break }
+            if grace == nil {
+                grace = Task {
+                    try? await Task.sleep(for: .milliseconds(1200))
+                    if !Task.isCancelled { continuation.yield((-1, [])) }
                 }
             }
-            var collected: [(Int, [StreamInfo])] = []
-            for await r in group { collected.append(r) }
-            return collected
         }
-        let ordered = results.sorted { $0.0 < $1.0 }.flatMap { $0.1 }
-        return ordered.filter(\.isHLS)
+        let ordered = collected.sorted { $0.key < $1.key }.flatMap { $0.value }
+        let candidates = ordered.filter(\.isHLS)
             + ordered.filter { !$0.isHLS && $0.audioURL != nil }
             + ordered.filter { !$0.isHLS && $0.audioURL == nil }
+        return (candidates, collected.count == clients.count)
+    }
+
+    /// One player request with `client`, turned into playable candidates.
+    private static func playerCandidates(_ videoId: String, client: ITClient) async -> [StreamInfo] {
+        var playback: [String: Any] = ["html5Preference": "HTML5_PREF_WANTS"]
+        if client.needsJSPlayer, let sts = await NSolver.shared.signatureTimestamp() {
+            playback["signatureTimestamp"] = sts
+        }
+        if Task.isCancelled { return [] }
+        let body: [String: Any] = [
+            "videoId": videoId,
+            "contentCheckOk": true,
+            "racyCheckOk": true,
+            "playbackContext": ["contentPlaybackContext": playback]
+        ]
+        do {
+            let j = try await api.post("player", body, client: client, authenticated: client.supportsCookies)
+            let status = j.at("playabilityStatus.status").string ?? "?"
+            let sd = j["streamingData"]
+            let formats = sd["formats"].array.count + sd["adaptiveFormats"].array.count
+            let reason = status == "OK" ? "" : " – " + (j.at("playabilityStatus.reason").string ?? "")
+            DebugLog.log("[\(client.name)] Status \(status), HLS \(sd["hlsManifestUrl"].exists ? "ja" : "nein"), Formate \(formats)\(reason)")
+            let meta = try Parser.stream(j, videoId: videoId, client: client)
+            return await candidates(from: j, meta: meta, client: client)
+        } catch {
+            if !Task.isCancelled { DebugLog.log("[\(client.name)] Fehler: \(error.localizedDescription)") }
+            return []
+        }
     }
 
     /// Builds playable variants from one player response, deciphering signatures and n values.
@@ -193,7 +228,7 @@ enum YouTube {
 
     /// Metadata-only player response (title, captions …) from the first answering client.
     static func stream(_ videoId: String) async throws -> StreamInfo {
-        if let first = await streamCandidates(videoId).first { return first }
+        if let first = await streamCandidates(videoId).candidates.first { return first }
         throw YTError.unplayable("Kein Stream verfügbar.")
     }
 
@@ -209,9 +244,39 @@ enum YouTube {
         return Parser.feed(j)
     }
 
-    static func comments(_ token: String) async throws -> CommentPage {
-        let j = try await api.post("next", ["continuation": token])
-        return Parser.comments(j)
+    /// Loads a comment page. Watch-page tokens belong to `next`, tokens from the Shorts
+    /// panel to `browse`; when `endpoint` is unknown both are tried.
+    static func comments(_ token: String, endpoint: String? = nil) async throws -> CommentPage {
+        let endpoints = endpoint.map { [$0] } ?? ["next", "browse"]
+        var lastError: Error?
+        for ep in endpoints {
+            do {
+                let j = try await api.post(ep, ["continuation": token])
+                var page = Parser.comments(j)
+                page.endpoint = ep
+                let empty = page.comments.isEmpty && page.continuation == nil && page.countText == nil
+                if !empty || ep == endpoints.last { return page }
+            } catch {
+                lastError = error
+            }
+        }
+        throw lastError ?? YTError.invalidResponse
+    }
+
+    /// Comment token from the Shorts player (used when the watch page has none).
+    static func shortCommentsToken(_ videoId: String) async -> String? {
+        guard let j = try? await api.post("reel/reel_item_watch", [
+            "playerRequest": ["videoId": videoId],
+            "params": "CAUwAg%3D%3D",
+            "disablePlayerResponse": true
+        ]) else { return nil }
+        for panel in j["engagementPanels"].array {
+            let p = panel["engagementPanelSectionListRenderer"]
+            let tag = (p["targetId"].string ?? "") + (p["panelIdentifier"].string ?? "")
+            guard tag.contains("comment") else { continue }
+            if let token = p["content"].findFirst("continuationCommand")["token"].string { return token }
+        }
+        return nil
     }
 
     /// Adds the video to the signed-in user's watch history.

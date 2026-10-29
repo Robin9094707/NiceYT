@@ -7,6 +7,12 @@ struct SettingsView: View {
     @State private var showLogin = false
     @State private var showCookies = false
     @State private var confirmSignOut = false
+    @State private var cacheCleared = false
+
+    /// The list plus the stored value, should it be one that isn't offered.
+    private func options(_ list: [AppSettings.Option], current: String) -> [AppSettings.Option] {
+        list.contains { $0.code == current } ? list : list + [.init(current, current)]
+    }
 
     var body: some View {
         NavigationStack {
@@ -87,14 +93,20 @@ struct SettingsView: View {
                 }
 
                 Section {
-                    TextField("Sprache (hl)", text: $settings.language)
-                        .textInputAutocapitalization(.never)
-                    TextField("Region (gl)", text: $settings.region)
-                        .textInputAutocapitalization(.characters)
+                    Picker("Sprache", selection: $settings.language) {
+                        ForEach(options(AppSettings.languages, current: settings.language)) { l in
+                            Text(l.name).tag(l.code)
+                        }
+                    }
+                    Picker("Region", selection: $settings.region) {
+                        ForEach(options(AppSettings.regions, current: settings.region)) { r in
+                            Text(r.name).tag(r.code)
+                        }
+                    }
                 } header: {
                     Text("Inhalte")
                 } footer: {
-                    Text("Bestimmt Sprache und Region der Empfehlungen, z. B. de / DE.")
+                    Text("Sprache und Region der Inhalte von YouTube (Empfehlungen, Datumsangaben, Aufrufe, Kommentare). Gilt für neu geladene Seiten.")
                 }
 
                 Section {
@@ -112,6 +124,7 @@ struct SettingsView: View {
                 Section("Speicher") {
                     Button("Bild-Cache leeren", systemImage: "trash") {
                         URLCache.shared.removeAllCachedResponses()
+                        cacheCleared = true
                     }
                     Button("Suchverlauf löschen", systemImage: "clock.badge.xmark") {
                         UserDefaults.standard.removeObject(forKey: "searchHistory")
@@ -138,6 +151,10 @@ struct SettingsView: View {
             .sheet(isPresented: $showCookies) { CookieImportView {} }
             .confirmationDialog("Wirklich abmelden?", isPresented: $confirmSignOut, titleVisibility: .visible) {
                 Button("Abmelden", role: .destructive) { account.signOut() }
+                Button("Abbrechen", role: .cancel) {}
+            }
+            .alert("Cache geleert", isPresented: $cacheCleared) {
+                Button("OK", role: .cancel) {}
             }
         }
     }

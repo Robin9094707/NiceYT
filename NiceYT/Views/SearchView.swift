@@ -30,6 +30,10 @@ struct SearchView: View {
             }
             .withRoutes()
         }
+        .onAppear {
+            // The history may have been cleared in the settings.
+            history = UserDefaults.standard.stringArray(forKey: "searchHistory") ?? []
+        }
     }
 
     private var filterBar: some View {

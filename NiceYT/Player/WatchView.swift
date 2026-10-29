@@ -1,5 +1,26 @@
 import SwiftUI
 
+/// Hosts the watch screen in the full-screen cover and lets it follow the
+/// drag-down gesture (only this small view observes the fast-changing offset).
+struct PlayerContainer: View {
+    @EnvironmentObject private var player: PlayerModel
+
+    var body: some View {
+        DragFollower(live: player.live) { WatchView() }
+    }
+}
+
+private struct DragFollower<Content: View>: View {
+    @ObservedObject var live: PlayerLive
+    @ViewBuilder var content: Content
+
+    var body: some View {
+        content
+            .clipShape(RoundedRectangle(cornerRadius: min(44, live.dragOffset / 3), style: .continuous))
+            .offset(y: live.dragOffset)
+    }
+}
+
 struct WatchView: View {
     @EnvironmentObject private var player: PlayerModel
     @EnvironmentObject private var account: AccountStore
@@ -9,35 +30,73 @@ struct WatchView: View {
     @State private var showDescription = false
     @State private var path = NavigationPath()
 
+    /// Video covers the whole screen: fullscreen mode or an iPhone held sideways.
+    private var isFull: Bool { player.isFullscreen || vSize == .compact }
+
     var body: some View {
         NavigationStack(path: $path) {
-            GeometryReader { geo in
-                if vSize == .compact || player.isFullscreen {
-                    // Landscape: video fills the screen.
-                    videoArea.frame(width: geo.size.width, height: geo.size.height)
-                        .ignoresSafeArea()
-                } else {
+            ZStack {
+                GeometryReader { geo in
                     VStack(spacing: 0) {
                         videoArea
-                            .frame(width: geo.size.width, height: geo.size.width * 9 / 16)
-                        ScrollView {
-                            LazyVStack(alignment: .leading, spacing: 18) {
-                                infoSection
-                                relatedSection
+                            .frame(width: geo.size.width,
+                                   height: isFull ? geo.size.height : min(geo.size.width * 9 / 16, geo.size.height * 0.6))
+                        if !isFull {
+                            ScrollView {
+                                LazyVStack(alignment: .leading, spacing: 18) {
+                                    infoSection
+                                    relatedSection
+                                }
+                                .padding(16)
                             }
-                            .padding(16)
+                            .scrollEdgeEffectStyle(.soft, for: .top)
                         }
-                        .scrollEdgeEffectStyle(.soft, for: .top)
                     }
                 }
+                // In fullscreen the video also uses the areas next to the Dynamic Island
+                // and above the home indicator.
+                .ignoresSafeArea(.container, edges: isFull ? .all : [])
             }
-            .background(vSize == .compact || player.isFullscreen ? Color.black : Color(.systemBackground))
-            .statusBarHidden(vSize == .compact || player.isFullscreen)
-            .persistentSystemOverlays(vSize == .compact || player.isFullscreen ? .hidden : .automatic)
+            .overlay(alignment: .topLeading) {
+                if !isFull {
+                    Button { player.minimize() } label: {
+                        Image(systemName: "chevron.down")
+                            .font(.headline)
+                            .frame(width: 36, height: 36)
+                    }
+                    .buttonStyle(.glass)
+                    .buttonBorderShape(.circle)
+                    .accessibilityLabel("Player minimieren")
+                    .padding(10)
+                }
+            }
+            .overlay(alignment: .topTrailing) {
+                if player.error == nil, player.current != nil {
+                    Button {
+                        player.setFullscreen(!isFull)
+                    } label: {
+                        Image(systemName: isFull ? "arrow.down.right.and.arrow.up.left" : "arrow.up.left.and.arrow.down.right")
+                            .font(.subheadline.weight(.semibold))
+                            .frame(width: 34, height: 34)
+                    }
+                    .buttonStyle(.glass)
+                    .buttonBorderShape(.circle)
+                    .accessibilityLabel(isFull ? "Vollbild beenden" : "Vollbild")
+                    .padding(isFull ? 14 : 10)
+                }
+            }
+            .background((isFull ? Color.black : Color(.systemBackground)).ignoresSafeArea())
+            .statusBarHidden(isFull)
+            .persistentSystemOverlays(isFull ? .hidden : .automatic)
             .toolbar(.hidden, for: .navigationBar)
             .withRoutes()
             .overlay(alignment: .top) { toastView }
         }
+        .onChange(of: vSize) { _, new in
+            // Turning an iPhone back to portrait ends fullscreen, like in the YouTube app.
+            if new == .regular, Orientation.isPhone { player.fullscreenEndedByRotation() }
+        }
+        .onChange(of: player.current?.id) { path = NavigationPath() }
         .sheet(isPresented: $showComments) {
             if let token = player.details?.commentsToken {
                 CommentsView(token: token, count: player.details?.commentCount)
@@ -65,94 +124,21 @@ struct WatchView: View {
                 }
                 .padding()
             } else {
-                SystemPlayerView()
+                SystemPlayerView(isFull: isFull)
                 if player.isLoading {
                     if let video = player.current {
-                        RemoteImage(url: video.bestThumbnail).opacity(0.6)
+                        RemoteImage(url: video.bestThumbnail, contentMode: .fit)
+                            .opacity(0.6)
+                            .allowsHitTesting(false)
                     }
                     ProgressView().controlSize(.large).tint(.white)
+                        .allowsHitTesting(false)
                 }
             }
-            if let caption = player.currentCaption {
-                VStack {
-                    Spacer()
-                    Text(caption)
-                        .font(.callout.weight(.semibold))
-                        .foregroundStyle(.white)
-                        .multilineTextAlignment(.center)
-                        .padding(.horizontal, 10).padding(.vertical, 5)
-                        .background(.black.opacity(0.6), in: .rect(cornerRadius: 8))
-                        .padding(.bottom, 44)
-                        .padding(.horizontal, 20)
-                }
-                .allowsHitTesting(false)
-            }
+            CaptionOverlay(live: player.live, bottomPadding: isFull ? 56 : 44)
         }
-        .overlay { gestureHUD }
-        .overlay(alignment: .topLeading) {
-            if vSize != .compact && !player.isFullscreen {
-                Button { player.isPresented = false } label: {
-                    Image(systemName: "chevron.down")
-                        .font(.headline)
-                        .frame(width: 36, height: 36)
-                }
-                .buttonStyle(.glass)
-                .buttonBorderShape(.circle)
-                .padding(10)
-            }
-        }
-        .overlay(alignment: .topTrailing) {
-            if player.error == nil {
-                let full = vSize == .compact || player.isFullscreen
-                Button {
-                    player.setFullscreen(!full)
-                } label: {
-                    Image(systemName: full ? "arrow.down.right.and.arrow.up.left" : "arrow.up.left.and.arrow.down.right")
-                        .font(.subheadline.weight(.semibold))
-                        .frame(width: 34, height: 34)
-                }
-                .buttonStyle(.glass)
-                .buttonBorderShape(.circle)
-                .padding(full ? 20 : 10)
-            }
-        }
-    }
-
-    // MARK: Gesture feedback
-
-    @ViewBuilder private var gestureHUD: some View {
-        switch player.hud {
-        case .seek(let seconds):
-            HStack {
-                if seconds > 0 { Spacer() }
-                Label("\(seconds > 0 ? "+" : "")\(seconds) s", systemImage: seconds > 0 ? "goforward" : "gobackward")
-                    .font(.headline.monospacedDigit())
-                    .foregroundStyle(.white)
-                    .padding(.horizontal, 18).padding(.vertical, 12)
-                    .glassEffect(.regular, in: .capsule)
-                    .padding(.horizontal, 40)
-                if seconds < 0 { Spacer() }
-            }
-            .transition(.opacity.combined(with: .scale(scale: 0.9)))
-            .allowsHitTesting(false)
-        case .volume(let v):
-            levelHUD(icon: v == 0 ? "speaker.slash.fill" : "speaker.wave.2.fill", value: Double(v))
-        case .brightness(let b):
-            levelHUD(icon: "sun.max.fill", value: b)
-        case nil:
-            EmptyView()
-        }
-    }
-
-    private func levelHUD(icon: String, value: Double) -> some View {
-        HStack(spacing: 12) {
-            Image(systemName: icon)
-            ProgressView(value: value).frame(width: 120).tint(.white)
-        }
-        .foregroundStyle(.white)
-        .padding(.horizontal, 18).padding(.vertical, 12)
-        .glassEffect(.regular, in: .capsule)
-        .allowsHitTesting(false)
+        .clipped()
+        .overlay { GestureHUDView(live: player.live) }
     }
 
     // MARK: Info
@@ -421,4 +407,67 @@ struct DescriptionSheet: View {
 
 extension String {
     var nilIfEmpty: String? { isEmpty ? nil : self }
+}
+
+/// Current subtitle line (observes only the fast-changing playback values).
+private struct CaptionOverlay: View {
+    @ObservedObject var live: PlayerLive
+    let bottomPadding: CGFloat
+
+    var body: some View {
+        if let caption = live.caption {
+            VStack {
+                Spacer()
+                Text(caption)
+                    .font(.callout.weight(.semibold))
+                    .foregroundStyle(.white)
+                    .multilineTextAlignment(.center)
+                    .padding(.horizontal, 10).padding(.vertical, 5)
+                    .background(.black.opacity(0.6), in: .rect(cornerRadius: 8))
+                    .padding(.bottom, bottomPadding)
+                    .padding(.horizontal, 20)
+            }
+            .allowsHitTesting(false)
+        }
+    }
+}
+
+/// Feedback for the seek / volume / brightness gestures.
+private struct GestureHUDView: View {
+    @ObservedObject var live: PlayerLive
+
+    var body: some View {
+        switch live.hud {
+        case .seek(let seconds):
+            HStack {
+                if seconds > 0 { Spacer() }
+                Label("\(seconds > 0 ? "+" : "")\(seconds) s", systemImage: seconds > 0 ? "goforward" : "gobackward")
+                    .font(.headline.monospacedDigit())
+                    .foregroundStyle(.white)
+                    .padding(.horizontal, 18).padding(.vertical, 12)
+                    .glassEffect(.regular, in: .capsule)
+                    .padding(.horizontal, 40)
+                if seconds < 0 { Spacer() }
+            }
+            .transition(.opacity.combined(with: .scale(scale: 0.9)))
+            .allowsHitTesting(false)
+        case .volume(let v):
+            level(icon: v == 0 ? "speaker.slash.fill" : "speaker.wave.2.fill", value: Double(v))
+        case .brightness(let b):
+            level(icon: "sun.max.fill", value: b)
+        case nil:
+            EmptyView()
+        }
+    }
+
+    private func level(icon: String, value: Double) -> some View {
+        HStack(spacing: 12) {
+            Image(systemName: icon)
+            ProgressView(value: value).frame(width: 120).tint(.white)
+        }
+        .foregroundStyle(.white)
+        .padding(.horizontal, 18).padding(.vertical, 12)
+        .glassEffect(.regular, in: .capsule)
+        .allowsHitTesting(false)
+    }
 }

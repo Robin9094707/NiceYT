@@ -1,18 +1,33 @@
 import Foundation
 
 /// Remembers where each video was left off (local, like YouTube's red progress bar).
+/// Kept in memory and written through to UserDefaults, because thumbnails read it a lot.
 enum PositionStore {
     private static let key = "playbackPositions"
+    private static let lock = NSLock()
+    private static var memory: [String: [Double]]?
 
     private static var all: [String: [Double]] {
-        get { UserDefaults.standard.dictionary(forKey: key) as? [String: [Double]] ?? [:] }
-        set { UserDefaults.standard.set(newValue, forKey: key) }
+        get {
+            lock.lock(); defer { lock.unlock() }
+            if let memory { return memory }
+            let loaded = UserDefaults.standard.dictionary(forKey: key) as? [String: [Double]] ?? [:]
+            memory = loaded
+            return loaded
+        }
+        set {
+            lock.lock()
+            memory = newValue
+            lock.unlock()
+            UserDefaults.standard.set(newValue, forKey: key)
+        }
     }
 
     static func save(_ id: String, position: Double, duration: Double) {
         guard duration > 0, position.isFinite else { return }
         var dict = all
         if position < 5 || position > duration - 15 {
+            guard dict[id] != nil else { return }
             dict[id] = nil
         } else {
             dict[id] = [position, duration, Date().timeIntervalSince1970]
@@ -35,6 +50,7 @@ enum PositionStore {
 
     static func remove(_ id: String) {
         var dict = all
+        guard dict[id] != nil else { return }
         dict[id] = nil
         all = dict
     }
