@@ -127,7 +127,7 @@ enum MediaExtractor {
         case .reddit: cookieHost = "reddit.com"
         default: cookieHost = url.host ?? ""
         }
-        let jar = CookieJar(await BrowserModel.cookies(for: cookieHost, isPrivate: isPrivate))
+        let jar = ExtractorCookies(await BrowserModel.cookies(for: cookieHost, isPrivate: isPrivate))
         let http = Fetcher(jar: jar)
         DebugLog.log("🔎 Assistent: \(site.name) \(url.absoluteString)")
         switch site {
@@ -743,7 +743,7 @@ enum MediaExtractor {
 // MARK: - Networking
 
 /// Cookies of one extraction (browser session + whatever the site sets on the way).
-final class CookieJar: @unchecked Sendable {
+final class ExtractorCookies: @unchecked Sendable {
     private var cookies: [String: HTTPCookie] = [:]
     private let lock = NSLock()
 
@@ -791,10 +791,10 @@ final class CookieJar: @unchecked Sendable {
 
 /// Plain requests with a manual cookie jar (no shared cookie storage involved).
 final class Fetcher: @unchecked Sendable {
-    let jar: CookieJar
+    let jar: ExtractorCookies
     private let session: URLSession
 
-    init(jar: CookieJar) {
+    init(jar: ExtractorCookies) {
         self.jar = jar
         let config = URLSessionConfiguration.ephemeral
         config.httpShouldSetCookies = false

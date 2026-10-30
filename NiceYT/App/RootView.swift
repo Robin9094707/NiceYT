@@ -17,7 +17,6 @@ struct RootView: View {
     @ObservedObject private var browser = BrowserModel.shared
     @ObservedObject private var links = LinkRouter.shared
     @ObservedObject private var musicSearch = MusicSearchRequest.shared
-    @ObservedObject private var updates = UpdateChecker.shared
     @Environment(\.scenePhase) private var scenePhase
     @State private var tab: AppTab = .home
 
@@ -41,7 +40,6 @@ struct RootView: View {
         }
         .tabBarMinimizeBehavior(.onScrollDown)
         .youTubeDownloadSheet(active: !player.isPresented && !browser.isPresented)
-        .downloadAssistantSheet(active: !player.isPresented && !browser.isPresented && ytDownloads.request == nil)
         .confirmations(active: !player.isPresented && !music.showNowPlaying && ytDownloads.request == nil && !browser.isPresented)
         .background {
             Color.clear.fullScreenCover(isPresented: $browser.isPresented) {
@@ -120,10 +118,7 @@ struct RootView: View {
                 AppLock.shared.lock()
             }
         }
-        .onReceive(NotificationCenter.default.publisher(for: .novaMediaWillPlay)) { _ in
-            player.player.pause()
-            music.pause()
-        }
+
         .onOpenURL { url in LinkRouter.shared.handle(scheme: url) }
         .onChange(of: links.playRequest) { _, video in
             guard let video else { return }
@@ -134,52 +129,54 @@ struct RootView: View {
                 player.play(video)
             }
         }
-        .overlay(alignment: .bottom) {
-            if links.clipboardHasLink, !browser.isPresented, !player.isPresented {
-                HStack(spacing: 12) {
-                    Image(systemName: "link.badge.plus").font(.title3).foregroundStyle(.tint)
-                    VStack(alignment: .leading, spacing: 1) {
-                        Text("Link in der Zwischenablage").font(.subheadline.weight(.semibold))
-                        Text("Herunterladen oder in Nova öffnen").font(.caption).foregroundStyle(.secondary)
-                    }
-                    Spacer(minLength: 4)
-                    Button { links.openClipboard() } label: { Image(systemName: "safari").font(.subheadline.weight(.semibold)) }
-                        .buttonStyle(.glass)
-                        .buttonBorderShape(.circle)
-                        .accessibilityLabel("Öffnen")
-                    Button { links.downloadClipboard() } label: {
-                        Label("Laden", systemImage: "arrow.down").font(.subheadline.weight(.semibold))
-                    }
-                    .buttonStyle(.glassProminent)
-                    Button { links.dismissClipboard() } label: { Image(systemName: "xmark").font(.caption.weight(.bold)) }
-                        .buttonStyle(.plain)
-                        .foregroundStyle(.secondary)
-                }
-                .padding(12)
-                .glassEffect(.regular, in: .rect(cornerRadius: 22))
-                .padding(.horizontal, 12)
-                .padding(.bottom, 120)
-                .transition(.move(edge: .bottom).combined(with: .opacity))
-            }
-        }
-        .sheet(item: Binding(get: { updates.prompt }, set: { updates.prompt = $0 })) { release in
-            UpdateSheet(release: release)
-        }
-        .task {
-            // Prepare the signature/n solver in the background so the first video starts fast.
-            Task.detached(priority: .utility) { await NSolver.shared.prewarm() }
-            YouTubeDownloads.shared.onToast = { [player] text in player.showToast(text) }
-            FileDownloads.shared.onToast = { [player] text in player.showToast(text) }
-            LinkRouter.shared.checkClipboard()
-            // Music starting stops videos and Shorts.
-            music.onStart = { [player] in
-                player.player.pause()
-                if tab == .shorts { tab = .music }
-            }
-            await musicStore.restore()
-            await UpdateChecker.shared.check()
-        }
+        .overlay(alignment: .bottom) { clipboardBanner }
+        .task { await startUp() }
+        .modifier(NovaSheets(assistantActive: !player.isPresented && !browser.isPresented && ytDownloads.request == nil))
         .tint(settings.accent.color)
+    }
+
+    @ViewBuilder private var clipboardBanner: some View {
+        if links.clipboardHasLink, !browser.isPresented, !player.isPresented {
+            HStack(spacing: 12) {
+                Image(systemName: "link.badge.plus").font(.title3).foregroundStyle(.tint)
+                VStack(alignment: .leading, spacing: 1) {
+                    Text("Link in der Zwischenablage").font(.subheadline.weight(.semibold))
+                    Text("Herunterladen oder in Nova öffnen").font(.caption).foregroundStyle(.secondary)
+                }
+                Spacer(minLength: 4)
+                Button { links.openClipboard() } label: { Image(systemName: "safari").font(.subheadline.weight(.semibold)) }
+                    .buttonStyle(.glass)
+                    .buttonBorderShape(.circle)
+                    .accessibilityLabel("Öffnen")
+                Button { links.downloadClipboard() } label: {
+                    Label("Laden", systemImage: "arrow.down").font(.subheadline.weight(.semibold))
+                }
+                .buttonStyle(.glassProminent)
+                Button { links.dismissClipboard() } label: { Image(systemName: "xmark").font(.caption.weight(.bold)) }
+                    .buttonStyle(.plain)
+                    .foregroundStyle(.secondary)
+            }
+            .padding(12)
+            .glassEffect(.regular, in: .rect(cornerRadius: 22))
+            .padding(.horizontal, 12)
+            .padding(.bottom, 120)
+            .transition(.move(edge: .bottom).combined(with: .opacity))
+        }
+    }
+
+    private func startUp() async {
+        // Prepare the signature/n solver in the background so the first video starts fast.
+        Task.detached(priority: .utility) { await NSolver.shared.prewarm() }
+        YouTubeDownloads.shared.onToast = { [player] text in player.showToast(text) }
+        FileDownloads.shared.onToast = { [player] text in player.showToast(text) }
+        LinkRouter.shared.checkClipboard()
+        // Music starting stops videos and Shorts.
+        music.onStart = { [player] in
+            player.player.pause()
+            if tab == .shorts { tab = .music }
+        }
+        await musicStore.restore()
+        await UpdateChecker.shared.check()
     }
 
     private func openMusicTab() {
@@ -191,6 +188,24 @@ struct RootView: View {
         let visible = tab == .shorts && !player.isPresented
         shorts.setTabActive(visible)
         Orientation.setPortraitOnly(visible)
+    }
+}
+
+/// Download assistant, update prompt and pausing for the native web player.
+private struct NovaSheets: ViewModifier {
+    @EnvironmentObject private var player: PlayerModel
+    @EnvironmentObject private var music: MusicPlayer
+    @ObservedObject private var updates = UpdateChecker.shared
+    let assistantActive: Bool
+
+    func body(content: Content) -> some View {
+        content
+            .downloadAssistantSheet(active: assistantActive)
+            .sheet(item: $updates.prompt) { UpdateSheet(release: $0) }
+            .onReceive(NotificationCenter.default.publisher(for: .novaMediaWillPlay)) { _ in
+                player.player.pause()
+                music.pause()
+            }
     }
 }
 
