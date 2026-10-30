@@ -47,12 +47,16 @@ final class ShareViewController: UIViewController {
         }
     }
 
-    /// Share extensions can't call `UIApplication.shared`; the responder chain still leads to it.
+    /// Share extensions can't call `UIApplication.shared.open`; the responder chain still leads to
+    /// the application object, whose method is called through the Objective-C runtime.
     private func openApp(_ url: URL) -> Bool {
+        let selector = NSSelectorFromString("openURL:options:completionHandler:")
+        typealias OpenURL = @convention(c) (AnyObject, Selector, NSURL, NSDictionary, AnyObject?) -> Void
         var responder: UIResponder? = self
         while let current = responder {
-            if let application = current as? UIApplication {
-                application.open(url, options: [:], completionHandler: nil)
+            if current !== self, current.responds(to: selector), let method = current.method(for: selector) {
+                let open = unsafeBitCast(method, to: OpenURL.self)
+                open(current, selector, url as NSURL, NSDictionary(), nil)
                 return true
             }
             responder = current.next
