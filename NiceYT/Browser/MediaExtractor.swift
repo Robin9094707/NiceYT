@@ -146,7 +146,7 @@ enum MediaExtractor {
         } catch {
             DebugLog.log("🔎 \(site.name): \(error.localizedDescription) – versuche unsichtbaren Browser")
             if let media = await headless(url, site: site, isPrivate: isPrivate) { return media }
-            if case YTError.http(let code) = error, [401, 403, 429].contains(code) { throw ExtractError.blocked(site.name) }
+            if let e = error as? YTError, case .http(let code) = e, [401, 403, 429].contains(code) { throw ExtractError.blocked(site.name) }
             throw error
         }
     }
