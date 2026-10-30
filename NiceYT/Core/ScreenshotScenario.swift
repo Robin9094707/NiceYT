@@ -10,7 +10,7 @@ enum ScreenshotScenario {
         UserDefaults.standard.set(Int.max, forKey: "updatePromptedBuild")
         if let bar = env["NOVA_BAR"].flatMap(BarPosition.init(rawValue:)) { BrowserLibrary.shared.barPosition = bar }
         let browser = BrowserModel.shared
-        let page = URL(string: env["NOVA_URL"] ?? "https://de.wikipedia.org")!
+        let page = env["NOVA_URL"].flatMap { $0.isEmpty ? nil : URL(string: $0) } ?? URL(string: "https://de.wikipedia.org")!
         Task {
             try? await Task.sleep(for: .seconds(1.5))
             switch name {

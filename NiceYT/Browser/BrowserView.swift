@@ -1037,11 +1037,15 @@ private struct TabCard: View {
                     Image(uiImage: image).resizable().scaledToFill()
                         .frame(maxHeight: .infinity, alignment: .top)
                 } else {
-                    VStack(spacing: 8) {
-                        Image(systemName: tab.isPrivate ? "hand.raised.fill" : "sparkles")
-                            .font(.title)
-                            .foregroundStyle(.tint)
-                        if let host = tab.host { Text(host).font(.caption2).foregroundStyle(.secondary) }
+                    VStack(spacing: 10) {
+                        if let url = tab.url, !(tab.showStart && tab.url == nil) {
+                            SiteTile(title: tab.host ?? "", url: url, size: 58)
+                        } else {
+                            Image(systemName: tab.isPrivate ? "hand.raised.fill" : "sparkles")
+                                .font(.title)
+                                .foregroundStyle(.tint)
+                            Text("Startseite").font(.caption2).foregroundStyle(.secondary)
+                        }
                     }
                 }
             }

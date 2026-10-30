@@ -445,7 +445,14 @@ struct DownloadAssistantSheet: View {
         }
         .controlSize(.large)
         .padding(.horizontal, 16)
-        .padding(.vertical, 8)
+        .padding(.top, 10)
+        .padding(.bottom, 8)
+        .background {
+            if media != nil || !jobs.isEmpty {
+                Rectangle().fill(.bar).ignoresSafeArea(edges: .bottom)
+                    .mask(LinearGradient(colors: [.clear, .black, .black], startPoint: .top, endPoint: .init(x: 0.5, y: 0.3)))
+            }
+        }
     }
 
     // MARK: Actions

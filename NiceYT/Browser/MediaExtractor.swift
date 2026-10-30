@@ -100,12 +100,14 @@ enum ExtractError: LocalizedError {
     case nothingFound
     case privatePost
     case unreachable(String)
+    case blocked(String)
 
     var errorDescription: String? {
         switch self {
         case .nothingFound: return "Auf dieser Seite wurde nichts zum Herunterladen gefunden."
         case .privatePost: return "Der Beitrag wurde nicht herausgegeben (privat oder nur angemeldet sichtbar). Melde dich im Nova-Browser bei der Plattform an und versuch es erneut."
         case .unreachable(let site): return "\(site) antwortet gerade nicht. Versuch es gleich noch einmal oder öffne den Link im Browser."
+        case .blocked(let site): return "\(site) hat die Anfrage abgelehnt (zu viele Abrufe oder Anmeldung nötig). Melde dich im Nova-Browser bei \(site) an oder versuch es später erneut."
         }
     }
 }
@@ -144,6 +146,7 @@ enum MediaExtractor {
         } catch {
             DebugLog.log("🔎 \(site.name): \(error.localizedDescription) – versuche unsichtbaren Browser")
             if let media = await headless(url, site: site, isPrivate: isPrivate) { return media }
+            if case YTError.http(let code) = error, [401, 403, 429].contains(code) { throw ExtractError.blocked(site.name) }
             throw error
         }
     }
