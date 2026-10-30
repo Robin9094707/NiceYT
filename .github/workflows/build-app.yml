@@ -86,6 +86,7 @@ jobs:
           retention-days: 30
 
       - name: Publish release
+        if: github.ref == 'refs/heads/main'
         uses: softprops/action-gh-release@v2
         with:
           tag_name: niceyt-${{ github.run_number }}
