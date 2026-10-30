@@ -122,7 +122,9 @@ final class BrowserModel: NSObject, ObservableObject, WKNavigationDelegate, WKUI
 
     func goBack() { webView.goBack() }
     func goForward() { webView.goForward() }
-    func reload() { isLoading ? webView.stopLoading() : webView.reload() }
+    func reload() {
+        if isLoading { webView.stopLoading() } else { webView.reload() }
+    }
 
     func setDesktop(_ on: Bool) {
         desktopMode = on
