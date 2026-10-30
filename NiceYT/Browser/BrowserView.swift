@@ -205,10 +205,7 @@ private struct BrowserTabView: View {
             }
             GlassEffectContainer(spacing: 8) {
                 HStack(spacing: 8) {
-                    if !addressFocused {
-                        roundButton("xmark", label: "Browser schließen") { model.isPresented = false }
-                        backButton
-                    }
+                    if !addressFocused { backButton }
                     addressPill
                     if addressFocused {
                         Button("Abbrechen") { addressFocused = false }
@@ -477,6 +474,7 @@ private struct BrowserTabView: View {
                 }
             }
             Section {
+                Button("Browser schließen", systemImage: "xmark") { model.isPresented = false }
                 Button("Lesezeichen", systemImage: "book") { sheet = .bookmarks }
                 Button("Verlauf", systemImage: "clock") { sheet = .history }
                 Button("Mediathek", systemImage: "square.stack.fill") { sheet = .library }

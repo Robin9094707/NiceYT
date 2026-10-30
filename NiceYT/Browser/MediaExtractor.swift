@@ -104,7 +104,7 @@ enum ExtractError: LocalizedError {
     var errorDescription: String? {
         switch self {
         case .nothingFound: return "Auf dieser Seite wurde nichts zum Herunterladen gefunden."
-        case .privatePost: return "Der Beitrag ist privat oder nur angemeldet sichtbar – melde dich im Browser an und versuch es erneut."
+        case .privatePost: return "Der Beitrag wurde nicht herausgegeben (privat oder nur angemeldet sichtbar). Melde dich im Nova-Browser bei der Plattform an und versuch es erneut."
         case .unreachable(let site): return "\(site) antwortet gerade nicht. Versuch es gleich noch einmal oder öffne den Link im Browser."
         }
     }
@@ -130,16 +130,40 @@ enum MediaExtractor {
         let jar = ExtractorCookies(await BrowserModel.cookies(for: cookieHost, isPrivate: isPrivate))
         let http = Fetcher(jar: jar)
         DebugLog.log("🔎 Assistent: \(site.name) \(url.absoluteString)")
-        switch site {
-        case .tiktok: return try await tiktok(url, http)
-        case .instagram: return try await instagram(url, http)
-        case .facebook: return try await facebook(url, http)
-        case .x: return try await twitter(url, http)
-        case .reddit: return try await reddit(url, http)
-        case .vimeo: return try await vimeo(url, http)
-        case .dailymotion: return try await dailymotion(url, http)
-        case .web: return try await generic(url, http)
+        do {
+            switch site {
+            case .tiktok: return try await tiktok(url, http)
+            case .instagram: return try await instagram(url, http)
+            case .facebook: return try await facebook(url, http)
+            case .x: return try await twitter(url, http)
+            case .reddit: return try await reddit(url, http)
+            case .vimeo: return try await vimeo(url, http)
+            case .dailymotion: return try await dailymotion(url, http)
+            case .web: return try await generic(url, http)
+            }
+        } catch {
+            DebugLog.log("🔎 \(site.name): \(error.localizedDescription) – versuche unsichtbaren Browser")
+            if let media = await headless(url, site: site, isPrivate: isPrivate) { return media }
+            throw error
         }
+    }
+
+    /// Plays the page in an invisible web view and takes what its players load.
+    private static func headless(_ url: URL, site: MediaSite, isPrivate: Bool) async -> ExtractedMedia? {
+        let result = await HeadlessExtractor.extract(url, isPrivate: isPrivate)
+        let usable = result.items.filter { $0.kind == .video || $0.kind == .stream || $0.kind == .audio }
+        guard !usable.isEmpty else { return nil }
+        let options: [MediaOption] = usable.prefix(8).enumerated().map { i, item in
+            let ext = item.url.pathExtension.lowercased()
+            let fileExt = item.kind == .stream || ext.isEmpty || ext == "m3u8" ? (item.kind == .audio ? "m4a" : "mp4") : ext
+            let title = item.kind == .stream ? "Video · Stream" : "\(item.kind.label)\(item.hidden ? " · versteckt" : "")"
+            return MediaOption(id: "hl-\(i)", title: title, detail: item.label ?? item.url.host, kind: item.kind,
+                               files: [MediaFile(candidates: [item.url], ext: fileExt)], recommended: i == 0,
+                               nameSuffix: i == 0 ? nil : "\(i + 1)")
+        }
+        let title = result.title.replacingOccurrences(of: " • Instagram", with: "")
+        return ExtractedMedia(site: site, page: result.page, title: title, author: result.page.host?.replacingOccurrences(of: "www.", with: ""),
+                              thumbnail: result.poster, duration: nil, options: options, userAgent: UserAgents.mobile)
     }
 
     // MARK: TikTok

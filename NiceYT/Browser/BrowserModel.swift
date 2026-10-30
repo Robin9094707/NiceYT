@@ -814,7 +814,7 @@ final class BrowserModel: NSObject, ObservableObject, WKNavigationDelegate, WKUI
 
     // MARK: Detector
 
-    private static let sniffer = #"""
+    static let sniffer = #"""
     (function () {
       'use strict';
       if (window.__niceSniffer) return;

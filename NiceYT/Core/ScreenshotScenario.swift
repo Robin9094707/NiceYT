@@ -29,7 +29,7 @@ enum ScreenshotScenario {
                 try? await Task.sleep(for: .seconds(4))
                 browser.showTabOverview()
             case "assistant":
-                DownloadAssistant.shared.start(page, autoStart: false)
+                DownloadAssistant.shared.start(page, autoStart: env["NOVA_AUTOSTART"] == "1")
             default:
                 break
             }

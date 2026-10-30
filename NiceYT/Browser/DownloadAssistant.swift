@@ -111,7 +111,7 @@ struct DownloadAssistantSheet: View {
                                                        poster: f.thumbnail.flatMap(URL.init(string:)), file: f))
             }
         }
-        .presentationDetents([.medium, .large])
+        .presentationDetents([.fraction(0.72), .large])
         .presentationDragIndicator(.visible)
         .task { await load() }
     }
@@ -238,8 +238,11 @@ struct DownloadAssistantSheet: View {
                 .frame(width: 38, height: 38)
                 .background(isOn ? Color.accentColor : Color.accentColor.opacity(0.14), in: .circle)
             VStack(alignment: .leading, spacing: 3) {
+                Text(option.title)
+                    .font(.subheadline.weight(.semibold))
+                    .lineLimit(2)
+                    .fixedSize(horizontal: false, vertical: true)
                 HStack(spacing: 6) {
-                    Text(option.title).font(.subheadline.weight(.semibold))
                     if option.recommended {
                         Text("Empfohlen")
                             .font(.caption2.weight(.bold))
@@ -247,9 +250,9 @@ struct DownloadAssistantSheet: View {
                             .padding(.horizontal, 6).padding(.vertical, 2)
                             .background(.green.gradient, in: .capsule)
                     }
-                }
-                if let detail = option.detail, !detail.isEmpty {
-                    Text(detail).font(.caption).foregroundStyle(.secondary).lineLimit(1)
+                    if let detail = option.detail, !detail.isEmpty {
+                        Text(detail).font(.caption).foregroundStyle(.secondary).lineLimit(1)
+                    }
                 }
             }
             Spacer(minLength: 4)
