@@ -142,6 +142,15 @@ final class MusicPlayer: ObservableObject {
         index = queue.firstIndex { $0.id == current?.id } ?? 0
     }
 
+    /// Reorders `upNext` (offsets refer to it).
+    func moveInQueue(from source: IndexSet, to destination: Int) {
+        guard queue.indices.contains(index) else { return }
+        var next = upNext
+        next.move(fromOffsets: source, toOffset: destination)
+        queue = Array(queue[...index]) + next
+        Haptics.selection()
+    }
+
     func toggleShuffle() {
         guard let cur = current else { return }
         shuffle.toggle()
@@ -283,6 +292,11 @@ final class MusicPlayer: ObservableObject {
             if await start(item, at: position, label: "Datei") { return }
         }
         isOffline = false
+        guard !track.isYouTube else {
+            isLoading = false
+            toast("Die Datei von „\(track.title)“ ist nicht mehr vorhanden")
+            return
+        }
         var wanted = AppSettings.shared.musicStreamQuality
         for _ in 0..<2 {
             do {

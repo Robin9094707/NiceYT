@@ -25,6 +25,7 @@ private struct DragFollower<Content: View>: View {
 
 struct WatchView: View {
     @EnvironmentObject private var player: PlayerModel
+    @EnvironmentObject private var ytDownloads: YouTubeDownloads
     @EnvironmentObject private var account: AccountStore
     @EnvironmentObject private var settings: AppSettings
     @Environment(\.verticalSizeClass) private var vSize
@@ -106,6 +107,7 @@ struct WatchView: View {
                     .presentationBackgroundInteraction(.enabled(upThrough: .medium))
             }
         }
+        .youTubeDownloadSheet(active: player.isPresented)
         .sheet(isPresented: $showDescription) {
             DescriptionSheet()
                 .presentationDetents([.medium, .large])
@@ -250,6 +252,16 @@ struct WatchView: View {
                     if let v = video {
                         ShareLink(item: v.shareURL) {
                             pill("Teilen", "square.and.arrow.up")
+                        }
+                        Button {
+                            Haptics.tap()
+                            var full = v
+                            if full.title.isEmpty { full.title = player.stream?.title ?? "" }
+                            if full.channelName == nil { full.channelName = player.stream?.author }
+                            YouTubeDownloads.shared.request = full
+                        } label: {
+                            pill(ytDownloads.file(for: v.id) != nil ? "Gespeichert" : "Download",
+                                 ytDownloads.file(for: v.id) != nil ? "checkmark.circle" : "arrow.down.circle")
                         }
                     }
                     if account.isSignedIn {

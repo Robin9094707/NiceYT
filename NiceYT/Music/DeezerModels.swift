@@ -64,6 +64,23 @@ struct DZTrack: Identifiable, Hashable, Codable, Sendable {
     var token: String?
     var tokenExpires: Double?
     var fallbackId: String?
+    /// Cover of tracks that don't come from Deezer (YouTube audio downloads).
+    var artworkURL: URL?
+    var sourceURL: URL?
+
+    /// Audio downloaded from a YouTube video (lives in the music downloads).
+    init(youtube video: Video, title: String, artist: String) {
+        id = "yt-" + video.id
+        self.title = title
+        self.artist = artist
+        artists = [artist]
+        album = "YouTube"
+        duration = 0
+        artworkURL = video.maxThumbnail
+        sourceURL = video.shareURL
+    }
+
+    var isYouTube: Bool { id.hasPrefix("yt-") }
 
     init?(gw j: JSON) {
         guard let id = j["SNG_ID"].string, id != "0", Int(id) ?? 0 > 0 else { return nil }
@@ -92,9 +109,9 @@ struct DZTrack: Identifiable, Hashable, Codable, Sendable {
 
     var fullTitle: String { version.map { "\(title) \($0)" } ?? title }
     var artistLine: String { artists.joined(separator: ", ") }
-    func coverURL(_ size: Int = 500) -> URL? { DZImage.url(cover, size: size) }
-    var shareURL: URL { URL(string: "https://www.deezer.com/track/\(id)")! }
-    var durationText: String { String(format: "%d:%02d", duration / 60, duration % 60) }
+    func coverURL(_ size: Int = 500) -> URL? { artworkURL ?? DZImage.url(cover, size: size) }
+    var shareURL: URL { sourceURL ?? URL(string: "https://www.deezer.com/track/\(id)")! }
+    var durationText: String { duration > 0 ? String(format: "%d:%02d", duration / 60, duration % 60) : "" }
     var year: String? { releaseDate.map { String($0.prefix(4)) } }
 
     var tokenIsFresh: Bool {
@@ -106,6 +123,18 @@ struct DZTrack: Identifiable, Hashable, Codable, Sendable {
     /// Track identity without the short-lived token (for downloads and comparisons).
     static func == (a: DZTrack, b: DZTrack) -> Bool { a.id == b.id }
     func hash(into hasher: inout Hasher) { hasher.combine(id) }
+}
+
+/// Song text; `lines` carry timestamps when Deezer has synced lyrics.
+struct DZLyrics: Sendable {
+    struct Line: Identifiable, Sendable {
+        let id: Int
+        let time: Double?
+        let text: String
+    }
+    var lines: [Line]
+    var isSynced: Bool { lines.contains { $0.time != nil } }
+    var copyright: String?
 }
 
 struct DZAlbum: Identifiable, Hashable, Sendable {
@@ -184,7 +213,7 @@ struct DZPlaylist: Identifiable, Hashable, Sendable {
     var shareURL: URL { URL(string: "https://www.deezer.com/playlist/\(id)")! }
 }
 
-struct DZUser: Sendable, Equatable {
+struct DZUser: Sendable, Equatable, Codable {
     let id: String
     let name: String
     let picture: String?
@@ -215,6 +244,7 @@ enum DeezerError: LocalizedError {
     case api(String)
     case noStream
     case geoBlocked
+    case license
     case http(Int)
 
     var errorDescription: String? {
@@ -224,6 +254,7 @@ enum DeezerError: LocalizedError {
         case .api(let m): return "Deezer: \(m)"
         case .noStream: return "Für diesen Song gibt es keinen abspielbaren Stream."
         case .geoBlocked: return "Dieser Song ist in deinem Land nicht verfügbar."
+        case .license: return "Dein Deezer-Abo erlaubt diesen Song gerade nicht."
         case .http(let c): return "Deezer antwortet mit HTTP \(c)."
         }
     }

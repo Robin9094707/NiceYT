@@ -5,7 +5,8 @@ struct DownloadedTrack: Identifiable, Codable, Hashable, Sendable {
     var id: String { track.id }
     var track: DZTrack
     var fileName: String
-    var quality: DZQuality
+    /// Deezer format; nil for audio taken from a YouTube video (AAC/M4A).
+    var quality: DZQuality?
     var size: Int64
     var date: Date
 
@@ -189,6 +190,13 @@ final class DownloadStore: ObservableObject {
     }
 
     // MARK: Managing
+
+    /// Adds a file produced elsewhere (YouTube audio download) to the music library.
+    func addExternal(_ track: DZTrack, fileName: String, size: Int64) {
+        items.removeAll { $0.id == track.id }
+        items.insert(DownloadedTrack(track: track, fileName: fileName, quality: nil, size: size, date: Date()), at: 0)
+        save()
+    }
 
     func delete(_ trackId: String) {
         guard let item = file(for: trackId) else { return }

@@ -28,6 +28,29 @@ struct DeezerLoginView: View {
                 }
                 .padding(.top, 20)
 
+                if Deezer.storedARL != nil {
+                    Button {
+                        isWorking = true
+                        error = nil
+                        Task {
+                            await store.retrySession()
+                            if store.user == nil { error = "Deezer hat nicht geantwortet. Prüfe die Verbindung und versuche es nochmal." }
+                            isWorking = false
+                        }
+                    } label: {
+                        HStack {
+                            if isWorking { ProgressView().controlSize(.small) }
+                            Label("Gespeicherte Anmeldung verbinden", systemImage: "arrow.clockwise")
+                        }
+                        .font(.headline)
+                        .frame(maxWidth: .infinity)
+                        .padding(.vertical, 6)
+                    }
+                    .buttonStyle(.glassProminent)
+                    .controlSize(.large)
+                    .disabled(isWorking)
+                }
+
                 Button { showWebLogin = true } label: {
                     Label("Bei Deezer anmelden", systemImage: "person.crop.circle.badge.checkmark")
                         .font(.headline)
@@ -219,3 +242,4 @@ struct DeezerLoginWebView: UIViewRepresentable {
         }
     }
 }
+

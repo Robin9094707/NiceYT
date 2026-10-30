@@ -9,17 +9,24 @@ actor Deezer {
     private static let arlKey = "deezerARL"
 
     private let session: URLSession
-    private let cookies: HTTPCookieStorage
+    /// Cookies kept by hand: the `arl` from the keychain must never be dropped or
+    /// replaced by whatever a response sets (bot-protection, logout pages …).
+    private var cookieJar: [String: String] = [:]
+    private var arl: String?
     private var apiToken: String?
     private(set) var user: DZUser?
+    private var userLoadedAt = Date.distantPast
+    private var restoreTask: Task<DZUser?, Never>?
 
     init() {
         let config = URLSessionConfiguration.ephemeral
-        config.httpCookieAcceptPolicy = .always
-        config.httpShouldSetCookies = true
+        config.httpCookieAcceptPolicy = .never
+        config.httpShouldSetCookies = false
+        config.httpCookieStorage = nil
         config.timeoutIntervalForRequest = 25
+        config.waitsForConnectivity = true
+        config.timeoutIntervalForResource = 60
         config.httpAdditionalHeaders = ["User-Agent": Self.userAgent, "Accept-Language": "de-DE,de;q=0.9"]
-        cookies = config.httpCookieStorage ?? HTTPCookieStorage.shared
         session = URLSession(configuration: config)
     }
 
@@ -29,28 +36,63 @@ actor Deezer {
         Keychain.get(arlKey).flatMap { String(data: $0, encoding: .utf8) }.flatMap { $0.isEmpty ? nil : $0 }
     }
 
-    /// Signs in with an `arl` cookie (from the browser or the in-app login).
+    /// Last known account (shown right away on start, verified in the background).
+    static var cachedUser: DZUser? {
+        guard let data = UserDefaults.standard.data(forKey: "deezerUser") else { return nil }
+        return try? JSONDecoder().decode(DZUser.self, from: data)
+    }
+
+    static func clean(arl raw: String) -> String {
+        var s = raw.trimmingCharacters(in: .whitespacesAndNewlines.union(CharacterSet(charactersIn: "\"';")))
+        if let r = s.range(of: "arl=") { s = String(s[r.upperBound...]) }
+        if let semi = s.firstIndex(of: ";") { s = String(s[..<semi]) }
+        return s.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    /// Signs in with an `arl` cookie (from the browser or the in-app login). Network
+    /// problems are retried; only an answer that clearly says "not signed in" counts as
+    /// an invalid ARL.
     @discardableResult
     func login(arl raw: String) async throws -> DZUser {
-        let arl = raw.trimmingCharacters(in: .whitespacesAndNewlines.union(CharacterSet(charactersIn: "\"';")))
-            .replacingOccurrences(of: "arl=", with: "")
-        guard arl.count > 40 else { throw DeezerError.invalidARL }
-        for c in cookies.cookies ?? [] { cookies.deleteCookie(c) }
-        if let cookie = HTTPCookie(properties: [
-            .domain: ".deezer.com", .path: "/", .name: "arl", .value: arl, .secure: "TRUE",
-            .expires: Date(timeIntervalSinceNow: 365 * 24 * 3600)
-        ]) {
-            cookies.setCookie(cookie)
+        let value = Self.clean(arl: raw)
+        guard value.count > 40 else { throw DeezerError.invalidARL }
+        var lastError: Error = DeezerError.invalidARL
+        var anonymousAnswers = 0
+        for attempt in 0..<4 {
+            if attempt > 0 { try? await Task.sleep(for: .seconds(Double(attempt) * 1.5)) }
+            cookieJar = ["arl": value]
+            arl = value
+            apiToken = nil
+            do {
+                let data = try await gw("deezer.getUserData")
+                guard let id = data.at("USER.USER_ID").string else {
+                    lastError = DeezerError.api("Unerwartete Antwort – bitte gleich nochmal versuchen.")
+                    continue
+                }
+                guard id != "0" else {
+                    // Deezer sometimes answers anonymously once (bot protection warming up).
+                    anonymousAnswers += 1
+                    lastError = DeezerError.invalidARL
+                    if anonymousAnswers >= 2 { break }
+                    continue
+                }
+                let u = makeUser(id: id, data: data)
+                user = u
+                userLoadedAt = Date()
+                apiToken = data["checkForm"].string
+                Keychain.set(Data(value.utf8), for: Self.arlKey)
+                if let encoded = try? JSONEncoder().encode(u) { UserDefaults.standard.set(encoded, forKey: "deezerUser") }
+                return u
+            } catch {
+                lastError = error
+            }
         }
-        apiToken = nil
-        let data = try await gw("deezer.getUserData")
-        guard let id = data.at("USER.USER_ID").string, id != "0" else {
-            user = nil
-            throw DeezerError.invalidARL
-        }
-        apiToken = data["checkForm"].string
+        throw lastError
+    }
+
+    private func makeUser(id: String, data: JSON) -> DZUser {
         let o = data.at("USER.OPTIONS")
-        let u = DZUser(
+        return DZUser(
             id: id,
             name: data.at("USER.BLOG_NAME").string ?? "Deezer",
             picture: data.at("USER.USER_PICTURE").string,
@@ -61,26 +103,56 @@ actor Deezer {
             lovedTracksId: data.at("USER.LOVEDTRACKS_ID").string,
             offerName: data["OFFER_NAME"].string ?? data.at("USER.OFFER_NAME").string
         )
-        user = u
-        Keychain.set(Data(arl.utf8), for: Self.arlKey)
-        return u
     }
 
     func logout() {
-        for c in cookies.cookies ?? [] { cookies.deleteCookie(c) }
+        cookieJar = [:]
+        arl = nil
         apiToken = nil
         user = nil
         Keychain.remove(Self.arlKey)
+        UserDefaults.standard.removeObject(forKey: "deezerUser")
     }
 
-    /// Restores the stored session (on app start).
+    /// Restores the stored session (on app start). Concurrent callers share one attempt.
     func restore() async -> DZUser? {
         if let user { return user }
-        guard let arl = Self.storedARL else { return nil }
-        return try? await login(arl: arl)
+        if let restoreTask { return await restoreTask.value }
+        guard let stored = Self.storedARL else { return nil }
+        let task = Task { try? await self.login(arl: stored) }
+        restoreTask = task
+        let result = await task.value
+        restoreTask = nil
+        return result
+    }
+
+    /// The license token expires after a while: reload the account data when it's old.
+    private func freshUser() async throws -> DZUser {
+        if let user, Date().timeIntervalSince(userLoadedAt) < 30 * 60 { return user }
+        guard let arl = arl ?? Self.storedARL else { throw DeezerError.notLoggedIn }
+        return try await login(arl: arl)
     }
 
     // MARK: Gateway
+
+    private var cookieHeader: String {
+        var jar = cookieJar
+        if jar["arl"] == nil, let arl { jar["arl"] = arl }
+        return jar.map { "\($0.key)=\($0.value)" }.joined(separator: "; ")
+    }
+
+    /// Takes over session cookies from a response (never touching the `arl`).
+    private func absorbCookies(_ response: URLResponse?) {
+        guard let http = response as? HTTPURLResponse, let url = http.url,
+              let fields = http.allHeaderFields as? [String: String] else { return }
+        for cookie in HTTPCookie.cookies(withResponseHeaderFields: fields, for: url) where cookie.name != "arl" {
+            if let expires = cookie.expiresDate, expires < Date() {
+                cookieJar[cookie.name] = nil
+            } else {
+                cookieJar[cookie.name] = cookie.value
+            }
+        }
+    }
 
     /// Calls a `gw-light.php` method and returns its `results`.
     func gw(_ method: String, _ args: [String: Any] = [:], retry: Int = 0) async throws -> JSON {
@@ -93,16 +165,40 @@ actor Deezer {
             .init(name: "method", value: method),
             .init(name: "input", value: "3"),
             .init(name: "api_version", value: "1.0"),
-            .init(name: "api_token", value: method == "deezer.getUserData" ? "" : (apiToken ?? ""))
+            .init(name: "api_token", value: method == "deezer.getUserData" ? "null" : (apiToken ?? "null"))
         ]
         var req = URLRequest(url: comps.url!)
         req.httpMethod = "POST"
         req.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        req.setValue(cookieHeader, forHTTPHeaderField: "Cookie")
+        req.setValue("https://www.deezer.com", forHTTPHeaderField: "Origin")
+        req.setValue("https://www.deezer.com/", forHTTPHeaderField: "Referer")
         req.httpBody = try JSONSerialization.data(withJSONObject: args)
-        let (data, response) = try await session.data(for: req)
+        let data: Data
+        let response: URLResponse
+        do {
+            (data, response) = try await session.data(for: req)
+        } catch {
+            if retry < 2, (error as? URLError)?.code != .cancelled {
+                try? await Task.sleep(for: .seconds(1))
+                return try await gw(method, args, retry: retry + 1)
+            }
+            throw error
+        }
+        absorbCookies(response)
         let status = (response as? HTTPURLResponse)?.statusCode ?? 0
-        guard (200..<300).contains(status) else { throw DeezerError.http(status) }
+        guard (200..<300).contains(status) else {
+            if retry < 2, status == 403 || status >= 500 {
+                try? await Task.sleep(for: .seconds(1.5))
+                return try await gw(method, args, retry: retry + 1)
+            }
+            throw DeezerError.http(status)
+        }
         let j = JSON(data: data)
+        guard j.exists else {
+            if retry < 2 { return try await gw(method, args, retry: retry + 1) }
+            throw DeezerError.api("Unerwartete Antwort")
+        }
         let error = j["error"]
         if !error.keys.isEmpty {
             let keys = Set(error.keys)
@@ -198,6 +294,38 @@ actor Deezer {
         _ = try await gw(on ? "favorite_song.add" : "favorite_song.remove", ["SNG_ID": trackId])
     }
 
+    func lyrics(_ trackId: String) async throws -> DZLyrics? {
+        let r = try await gw("song.getLyrics", ["SNG_ID": trackId])
+        let synced = r["LYRICS_SYNC_JSON"].array.compactMap { l -> (Double, String)? in
+            guard let ms = l["milliseconds"].double, let text = l["line"].string else { return nil }
+            return (ms / 1000, text)
+        }
+        let copyright = r["LYRICS_COPYRIGHTS"].string
+        if !synced.isEmpty {
+            return DZLyrics(lines: synced.enumerated().map { DZLyrics.Line(id: $0.offset, time: $0.element.0, text: $0.element.1) },
+                            copyright: copyright)
+        }
+        guard let text = r["LYRICS_TEXT"].string, !text.isEmpty else { return nil }
+        let lines = text.replacingOccurrences(of: "\r", with: "").components(separatedBy: "\n")
+        return DZLyrics(lines: lines.enumerated().map { DZLyrics.Line(id: $0.offset, time: nil, text: $0.element) },
+                        copyright: copyright)
+    }
+
+    /// Endless mix ("radio") starting from a song.
+    func trackMix(_ track: DZTrack) async throws -> [DZTrack] {
+        if let r = try? await gw("song.getSearchTrackMix", ["SNG_ID": track.id, "START_WITH_INPUT_TRACK": true]) {
+            let list = r["data"].array.compactMap(DZTrack.init(gw:))
+            if list.count > 1 { return list }
+        }
+        guard let artistId = track.artistId else { return [track] }
+        let top = try await artist(artistId).1.filter { $0.id != track.id }
+        return [track] + top.shuffled()
+    }
+
+    func addToPlaylist(_ playlistId: String, trackId: String) async throws {
+        _ = try await gw("playlist.addSongs", ["PLAYLIST_ID": playlistId, "songs": [[trackId, 0]], "offset": -1])
+    }
+
     func userPlaylists() async throws -> [DZPlaylist] {
         guard let user else { throw DeezerError.notLoggedIn }
         let r = try await gw("deezer.pageProfile", ["USER_ID": user.id, "tab": "playlists", "nb": 200])
@@ -244,7 +372,8 @@ actor Deezer {
 
     /// Encrypted CDN URL of the track in the best available format up to `quality`.
     func mediaURL(for track: DZTrack, quality: DZQuality) async throws -> (url: URL, quality: DZQuality, track: DZTrack) {
-        guard let user, !user.licenseToken.isEmpty else { throw DeezerError.notLoggedIn }
+        var user = try await freshUser()
+        guard !user.licenseToken.isEmpty else { throw DeezerError.notLoggedIn }
         var track = track
         if !track.tokenIsFresh, let fresh = try await tracks([track.id]).first {
             track.token = fresh.token
@@ -264,7 +393,15 @@ actor Deezer {
         for candidate in candidates {
             guard let token = candidate.token else { continue }
             do {
-                let (url, format) = try await requestURL(token: token, license: user.licenseToken, formats: allowed)
+                let (url, format): (URL, DZQuality)
+                do {
+                    (url, format) = try await requestURL(token: token, license: user.licenseToken, formats: allowed)
+                } catch DeezerError.license {
+                    // Expired license token: reload the account once and try again.
+                    userLoadedAt = .distantPast
+                    user = try await freshUser()
+                    (url, format) = try await requestURL(token: token, license: user.licenseToken, formats: allowed)
+                }
                 // Decryption uses the id of the track that was actually served.
                 var served = track
                 if candidate.id != track.id { served = candidate }
@@ -285,12 +422,14 @@ actor Deezer {
             "media": [["type": "FULL", "formats": formats.map { ["cipher": "BF_CBC_STRIPE", "format": $0.rawValue] }]],
             "track_tokens": [token]
         ] as [String: Any])
+        req.setValue(cookieHeader, forHTTPHeaderField: "Cookie")
         let (data, response) = try await session.data(for: req)
         let status = (response as? HTTPURLResponse)?.statusCode ?? 0
         guard (200..<300).contains(status) else { throw DeezerError.http(status) }
         let item = JSON(data: data)["data"][0]
         if let code = item["errors"][0]["code"].int {
             if code == 2002 { throw DeezerError.geoBlocked }
+            if code == 2001 || code == 1000 { throw DeezerError.license }
             throw DeezerError.api(item["errors"][0]["message"].string ?? "Fehler \(code)")
         }
         let media = item["media"][0]

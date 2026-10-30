@@ -233,9 +233,16 @@ final class PlayerModel: NSObject, ObservableObject {
         let id = video.id
         let detailsTask: Task<WatchDetails?, Never>? = reloadDetails ? Task { try? await YouTube.watch(id) } : nil
 
-        let prepared = await StreamResolver.firstPlayable(id, excluding: failedSources) { candidate in
-            guard !Task.isCancelled, self.current?.id == id else { return false }
-            return await self.tryPlay(candidate, startAt: startAt)
+        var prepared: PreparedStream?
+        // A downloaded copy plays without network (and never breaks off).
+        if let offline = YouTubeDownloads.shared.offlineStream(for: id), !failedSources.contains(offline.info.sourceKey),
+           await tryPlay(offline, startAt: startAt) {
+            prepared = offline
+        } else {
+            prepared = await StreamResolver.firstPlayable(id, excluding: failedSources) { candidate in
+                guard !Task.isCancelled, self.current?.id == id else { return false }
+                return await self.tryPlay(candidate, startAt: startAt)
+            }
         }
         guard !Task.isCancelled, current?.id == id else { return }
         if let prepared {

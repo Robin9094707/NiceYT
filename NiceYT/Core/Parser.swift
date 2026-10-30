@@ -479,6 +479,9 @@ enum Parser {
         var audioIsDefault = false
         var audioIsOriginal = false
         var audioIsDubbed = false
+        var contentLength: Int64?
+        var fps = 0
+        var qualityLabel: String?
 
         var audioLanguage: String {
             String((audioTrackId ?? "").split(separator: ".").first ?? "")
@@ -501,6 +504,9 @@ enum Parser {
             guard url != nil || cipher != nil else { return nil }
             var raw = RawFormat(itag: itag, url: url, cipher: cipher, mime: mime,
                                 height: f["height"].int ?? 0, bitrate: f["bitrate"].int ?? 0, isMuxed: muxed)
+            raw.contentLength = f["contentLength"].string.flatMap { Int64($0) }
+            raw.fps = f["fps"].int ?? 0
+            raw.qualityLabel = f["qualityLabel"].string
             let track = f["audioTrack"]
             if track.exists {
                 raw.audioTrackId = track["id"].string

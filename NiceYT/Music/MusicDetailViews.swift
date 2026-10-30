@@ -62,6 +62,9 @@ struct TrackListView: View {
         }
         .refreshable { await load() }
         .task { if tracks.isEmpty { await load() } }
+        .onChange(of: store.favoritesVersion) {
+            if source == .favorites { Task { await load() } }
+        }
     }
 
     private var footer: String {

@@ -11,6 +11,7 @@ enum Route: Hashable {
     case myPlaylists
     case subscriptionsList
     case library
+    case downloads
 }
 
 struct RouteDestination: View {
@@ -26,6 +27,7 @@ struct RouteDestination: View {
         case .myPlaylists: BrowseFeedView(title: "Playlists", browseId: "FEplaylist_aggregation")
         case .subscriptionsList: SubscribedChannelsView()
         case .library: LibraryView()
+        case .downloads: DownloadedVideosView()
         }
     }
 }
@@ -335,6 +337,9 @@ struct VideoMenu: View {
                         }
                     }
                 }
+            }
+            Button("Herunterladen …", systemImage: "arrow.down.circle") {
+                YouTubeDownloads.shared.request = video
             }
             Button("Song auf Deezer suchen", systemImage: "music.note") {
                 MusicSearchRequest.shared.search(video.title)

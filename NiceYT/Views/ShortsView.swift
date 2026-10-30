@@ -185,6 +185,12 @@ struct ShortPage: View {
             }
         }
         Button("Im Player öffnen") { openInPlayer() }
+        Button("Herunterladen …") {
+            var v = item.video
+            if v.title.isEmpty { v.title = details?.title ?? "" }
+            v.isShort = true
+            YouTubeDownloads.shared.request = v
+        }
         Button("Song auf Deezer suchen") {
             shorts.setTabActive(false)
             MusicSearchRequest.shared.search(item.video.title.isEmpty ? (details?.title ?? "") : item.video.title)

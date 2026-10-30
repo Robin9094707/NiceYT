@@ -98,6 +98,18 @@ struct MusicView: View {
     private var home: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 26) {
+                if let problem = store.sessionProblem {
+                    HStack(spacing: 12) {
+                        Image(systemName: "wifi.exclamationmark").font(.title3).foregroundStyle(.orange)
+                        Text(problem).font(.footnote)
+                        Spacer(minLength: 0)
+                        Button("Erneut") { Task { await store.retrySession() } }
+                            .buttonStyle(.glass)
+                            .font(.footnote.weight(.semibold))
+                    }
+                    .padding(12)
+                    .glassEffect(.regular.tint(.orange.opacity(0.15)), in: .rect(cornerRadius: 18))
+                }
                 quickTiles
                 if !store.playlists.isEmpty {
                     shelf("Deine Playlists") {
@@ -545,33 +557,53 @@ struct TrackMenu: View {
 
     var body: some View {
         Section {
-            Button("Abspielen", systemImage: "play.fill") {
-                if list.isEmpty { music.play([track]) } else { music.play(list, startAt: list.firstIndex(of: track) ?? 0) }
+            if music.current?.id != track.id {
+                Button("Abspielen", systemImage: "play.fill") {
+                    if list.isEmpty { music.play([track]) } else { music.play(list, startAt: list.firstIndex(of: track) ?? 0) }
+                }
             }
             if music.current != nil, music.current?.id != track.id {
                 Button("Als Nächstes", systemImage: "text.line.first.and.arrowtriangle.forward") { music.playNext(track) }
                 Button("Zur Warteschlange", systemImage: "text.badge.plus") { music.addToQueue(track) }
             }
+            if !track.isYouTube {
+                Button("Mix zu diesem Song", systemImage: "dot.radiowaves.left.and.right") { store.startMix(from: track) }
+            }
+        }
+        if !track.isYouTube {
+            Section {
+                Button(store.isFavorite(track.id) ? "Aus Lieblingssongs entfernen" : "Zu Lieblingssongs",
+                       systemImage: store.isFavorite(track.id) ? "heart.slash" : "heart") {
+                    store.toggleFavorite(track)
+                }
+                if !store.playlists.isEmpty {
+                    Menu {
+                        ForEach(store.playlists) { p in
+                            Button(p.title) { store.add(track, to: p) }
+                        }
+                    } label: {
+                        Label("Zur Playlist hinzufügen", systemImage: "music.note.list")
+                    }
+                }
+            }
         }
         Section {
-            Button(store.isFavorite(track.id) ? "Aus Lieblingssongs entfernen" : "Zu Lieblingssongs",
-                   systemImage: store.isFavorite(track.id) ? "heart.slash" : "heart") {
-                store.toggleFavorite(track)
-            }
             if downloads.isDownloaded(track.id) {
                 Button("Download löschen", systemImage: "trash", role: .destructive) { downloads.delete(track.id) }
             } else if downloads.isQueued(track.id) {
                 Button("Download abbrechen", systemImage: "xmark.circle") { downloads.cancel(track.id) }
-            } else {
+            } else if !track.isYouTube {
                 Button("Herunterladen", systemImage: "arrow.down.circle") { downloads.download(track) }
             }
         }
-        Section {
-            if let albumId = track.albumId {
-                Button("Album öffnen", systemImage: "square.stack") { MusicRouter.shared.open(.album(albumId)) }
-            }
-            if let artistId = track.artistId {
-                Button("Künstler öffnen", systemImage: "music.mic") { MusicRouter.shared.open(.artist(artistId)) }
+        if !track.isYouTube {
+            Section {
+                if let albumId = track.albumId {
+                    Button("Album öffnen", systemImage: "square.stack") { MusicRouter.shared.open(.album(albumId)) }
+                }
+                if let artistId = track.artistId {
+                    Button("Künstler öffnen", systemImage: "music.mic") { MusicRouter.shared.open(.artist(artistId)) }
+                }
             }
         }
         Section {

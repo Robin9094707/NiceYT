@@ -36,6 +36,7 @@ struct RootView: View {
             }
         }
         .tabBarMinimizeBehavior(.onScrollDown)
+        .youTubeDownloadSheet(active: !player.isPresented)
         .modifier(MiniPlayerAccessory(enabled: (player.current != nil || music.current != nil) && tab != .shorts))
         .sheet(isPresented: $music.showNowPlaying) {
             NowPlayingView()
@@ -44,6 +45,7 @@ struct RootView: View {
                 .environmentObject(downloads)
                 .tint(settings.accent.color)
                 .presentationDragIndicator(.hidden)
+                .presentationBackground(.black)
                 .presentationCornerRadius(36)
         }
         // Full-screen cover instead of a sheet: only that way the video can really use
@@ -56,6 +58,7 @@ struct RootView: View {
                 .environmentObject(music)
                 .environmentObject(musicStore)
                 .environmentObject(downloads)
+                .environmentObject(YouTubeDownloads.shared)
                 .environmentObject(settings)
                 .environmentObject(account)
                 .tint(settings.accent.color)
@@ -103,6 +106,7 @@ struct RootView: View {
         .task {
             // Prepare the signature/n solver in the background so the first video starts fast.
             Task.detached(priority: .utility) { await NSolver.shared.prewarm() }
+            YouTubeDownloads.shared.onToast = { [player] text in player.showToast(text) }
             // Music starting stops videos and Shorts.
             music.onStart = { [player] in
                 player.player.pause()

@@ -25,6 +25,9 @@ struct LibraryView: View {
                                  message: "Verlauf, „Später ansehen“, Likes und Playlists – synchronisiert mit deinem YouTube-Konto.")
                         .padding(.top, 30)
                 }
+                GlassEffectContainer(spacing: 12) {
+                    LibraryRow(title: "Downloads", icon: "arrow.down.circle.fill", route: .downloads)
+                }
                 featureCard
             }
             .padding(16)
