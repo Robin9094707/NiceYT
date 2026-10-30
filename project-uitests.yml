@@ -1,0 +1,26 @@
+# Only for CI: the app plus a UI test target (xcodegen --spec project-uitests.yml).
+include:
+  - project.yml
+targets:
+  NovaUITests:
+    type: bundle.ui-testing
+    platform: iOS
+    sources: [UITests]
+    dependencies:
+      - target: NiceYT
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.robin.niceyt.uitests
+        GENERATE_INFOPLIST_FILE: YES
+        TEST_TARGET_NAME: NiceYT
+        SWIFT_VERSION: "5.0"
+schemes:
+  NovaUITests:
+    build:
+      targets:
+        NiceYT: all
+        NovaUITests: [test]
+    test:
+      config: Debug
+      targets:
+        - NovaUITests

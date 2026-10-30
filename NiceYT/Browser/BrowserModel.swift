@@ -50,6 +50,8 @@ final class BrowserTab: NSObject, ObservableObject, Identifiable {
     @Published var loadError: String?
     /// Opens the download assistant as soon as media is found (links opened "to download").
     var autoShowMedia = false
+    /// Last time the tab was shown or navigated (automatic closing).
+    var lastActive = Date()
     /// State of a tab restored from the last session; loaded when the tab is shown.
     fileprivate var pendingRestore: (url: URL, state: Data?)?
     private var observers: [NSKeyValueObservation] = []
@@ -117,8 +119,9 @@ final class BrowserTab: NSObject, ObservableObject, Identifiable {
         webView.load(URLRequest(url: url))
     }
 
-    fileprivate func restore(url: URL, title: String, state: Data?) {
+    fileprivate func restore(url: URL, title: String, state: Data?, lastActive: Date?) {
         pendingRestore = (url, state)
+        if let lastActive { self.lastActive = lastActive }
         self.url = url
         self.title = title
         showStart = false
@@ -206,7 +209,14 @@ final class BrowserModel: NSObject, ObservableObject, WKNavigationDelegate, WKUI
 
     @Published var isPresented = false {
         didSet {
-            if isPresented { current.activate() } else { saveTabs() }
+            if isPresented {
+                closeStaleTabs()
+                current.activate()
+                current.lastActive = Date()
+            } else {
+                current.lastActive = Date()
+                saveTabs()
+            }
         }
     }
     @Published private(set) var tabs: [BrowserTab] = []
@@ -303,9 +313,26 @@ final class BrowserModel: NSObject, ObservableObject, WKNavigationDelegate, WKUI
     }
 
     func select(_ tab: BrowserTab) {
-        if selectedID != tab.id { current.takeSnapshot() }
+        if selectedID != tab.id {
+            current.takeSnapshot()
+            current.lastActive = Date()
+        }
         selectedID = tab.id
+        tab.lastActive = Date()
         tab.activate()
+    }
+
+    /// Closes tabs that weren't used within the chosen time (never the selected one).
+    func closeStaleTabs() {
+        guard let limit = BrowserLibrary.shared.tabLifetime.seconds else { return }
+        let stale = tabs.filter { $0.id != selectedID && Date().timeIntervalSince($0.lastActive) > limit }
+        guard !stale.isEmpty else { return }
+        for tab in stale { tab.tearDown() }
+        let ids = Set(stale.map(\.id))
+        tabs.removeAll { ids.contains($0.id) }
+        if privateTabs.isEmpty { privateStore = nil }
+        DebugLog.log("Browser: \(stale.count) unbenutzte Tabs geschlossen")
+        scheduleTabSave()
     }
 
     func close(_ tab: BrowserTab) {
@@ -468,6 +495,7 @@ final class BrowserModel: NSObject, ObservableObject, WKNavigationDelegate, WKUI
         let url: URL
         let title: String
         let state: Data?
+        var lastActive: Date?
     }
 
     private struct StoredSession: Codable {
@@ -487,7 +515,7 @@ final class BrowserModel: NSObject, ObservableObject, WKNavigationDelegate, WKUI
            let session = try? JSONDecoder().decode(StoredSession.self, from: data) {
             for stored in session.tabs {
                 let tab = makeTab(isPrivate: false, id: stored.id)
-                tab.restore(url: stored.url, title: stored.title, state: stored.state)
+                tab.restore(url: stored.url, title: stored.title, state: stored.state, lastActive: stored.lastActive)
                 tabs.append(tab)
             }
             selectedID = session.selected.flatMap { id in tabs.first { $0.id == id }?.id } ?? tabs.last?.id
@@ -517,7 +545,7 @@ final class BrowserModel: NSObject, ObservableObject, WKNavigationDelegate, WKUI
             guard let url = tab.pendingRestore?.url ?? tab.webView.url ?? tab.url,
                   ["http", "https"].contains(url.scheme?.lowercased() ?? ""), !tab.showStart || tab.pendingRestore != nil else { return nil }
             let state = tab.pendingRestore?.state ?? (tab.webView.interactionState as? Data)
-            return StoredTab(id: tab.id, url: url, title: tab.title, state: state)
+            return StoredTab(id: tab.id, url: url, title: tab.title, state: state, lastActive: tab.lastActive)
         }
         let selected = current.isPrivate ? stored.last?.id : selectedID
         if let data = try? JSONEncoder().encode(StoredSession(tabs: stored, selected: selected)) {
@@ -660,6 +688,7 @@ final class BrowserModel: NSObject, ObservableObject, WKNavigationDelegate, WKUI
     func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
         guard let tab = tab(for: webView) else { return }
         tab.loadError = nil
+        tab.lastActive = Date()
         if !tab.isPrivate, let url = webView.url { BrowserLibrary.shared.record(url, title: webView.title ?? "") }
         scheduleTabSave()
     }

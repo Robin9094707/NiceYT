@@ -1,5 +1,6 @@
 import AVFoundation
 import ImageIO
+import UniformTypeIdentifiers
 import QuickLook
 import SwiftUI
 
@@ -105,6 +106,7 @@ struct MediaLibraryView: View {
     @State private var previewURL: URL?
     @State private var renaming: SavedFile?
     @State private var newName = ""
+    @State private var importing = false
 
     enum Filter: String, CaseIterable, Identifiable {
         case all, videos, audio, images, files
@@ -213,6 +215,9 @@ struct MediaLibraryView: View {
         .safeAreaInset(edge: .bottom) { if selecting { selectionBar } }
         .quickLookPreview($previewURL, in: quickLookURLs)
         .sheet(item: $playing) { NativeMediaSheet(item: $0) }
+        .fileImporter(isPresented: $importing, allowedContentTypes: [.item], allowsMultipleSelection: true) { result in
+            if case .success(let urls) = result { files.importFiles(urls) }
+        }
         .alert("Umbenennen", isPresented: Binding(get: { renaming != nil }, set: { if !$0 { renaming = nil } })) {
             TextField("Name", text: $newName)
             Button("Sichern") {
@@ -334,6 +339,7 @@ struct MediaLibraryView: View {
         } else {
             ToolbarItem(placement: .primaryAction) {
                 Menu {
+                    Button("Dateien importieren", systemImage: "square.and.arrow.down") { importing = true }
                     Button("Auswählen", systemImage: "checkmark.circle") {
                         selecting = true
                         Haptics.selection()
@@ -401,6 +407,9 @@ struct MediaLibraryView: View {
         if f.kind.isPlayable {
             Button("Abspielen", systemImage: "play.fill") { tap(f) }
         }
+        if f.fileExtension == "TS" {
+            Button("In MP4 umwandeln", systemImage: "arrow.triangle.2.circlepath") { files.convertToMP4(f) }
+        }
         ShareLink(item: f.url) { Label("Teilen", systemImage: "square.and.arrow.up") }
         if f.kind == .video || f.kind == .image {
             Button("In Fotos sichern", systemImage: "photo.on.rectangle") { FileSaver.saveToPhotos(f.url) { files.onToast?($0) } }
@@ -429,7 +438,10 @@ struct MediaLibraryView: View {
             if selection.contains(f.id) { selection.remove(f.id) } else { selection.insert(f.id) }
             return
         }
-        if f.kind.isPlayable {
+        if f.fileExtension == "TS" {
+            // iOS can't play MPEG-TS files directly: convert, then it's a normal MP4.
+            files.convertToMP4(f)
+        } else if f.kind.isPlayable {
             playing = NativeMediaItem(url: f.url, kind: f.kind, title: f.name, poster: f.thumbnail.flatMap(URL.init(string:)), file: f)
         } else {
             previewURL = f.url

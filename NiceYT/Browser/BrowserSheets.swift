@@ -471,10 +471,15 @@ struct BrowserSettingsView: View {
                     Label("Mit \(lock.biometry.name) sperren", systemImage: lock.biometry.icon)
                 }
                 Toggle(isOn: $library.restoreTabs) { Label("Tabs beim Start wiederherstellen", systemImage: "square.on.square") }
+                Picker(selection: $library.tabLifetime) {
+                    ForEach(TabLifetime.allCases) { Text($0.label).tag($0) }
+                } label: {
+                    Label("Tabs schließen", systemImage: "clock.arrow.circlepath")
+                }
             } header: {
                 Text("Privatsphäre")
             } footer: {
-                Text("Die Sperre schützt Browser und Mediathek. Passwörter und Passkeys aus dem iCloud-Schlüsselbund oder anderen Passwort-Apps füllst du über die Taste über der Tastatur aus.")
+                Text("„Tabs schließen“ schließt Tabs, die so lange nicht benutzt wurden, automatisch. Die Sperre schützt Browser und Mediathek. Passwörter und Passkeys aus dem iCloud-Schlüsselbund oder anderen Passwort-Apps füllst du über die Taste über der Tastatur aus.")
             }
 
             Section {

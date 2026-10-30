@@ -256,7 +256,7 @@ struct DownloadAssistantSheet: View {
                 }
             }
             Spacer(minLength: 4)
-            if option.kind.isPlayable, let first = option.files.first?.candidates.first {
+            if option.kind.isPlayable, let first = option.files.first?.candidates.first, first.pathExtension.lowercased() != "mpd" {
                 Button {
                     preview = NativeMediaItem(url: first, kind: option.kind, title: media.title, poster: media.thumbnail,
                                               page: media.page, userAgent: media.userAgent, isPrivate: request.isPrivate,

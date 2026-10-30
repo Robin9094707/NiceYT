@@ -81,6 +81,30 @@ enum BarPosition: String, CaseIterable, Identifiable {
     var label: String { self == .top ? "Oben" : "Unten" }
 }
 
+/// Closes tabs that weren't used for a while (like Safari's "Tabs schließen").
+enum TabLifetime: String, CaseIterable, Identifiable {
+    case never, hour, day, week, month
+    var id: String { rawValue }
+    var label: String {
+        switch self {
+        case .never: return "Manuell"
+        case .hour: return "Nach einer Stunde"
+        case .day: return "Nach einem Tag"
+        case .week: return "Nach einer Woche"
+        case .month: return "Nach einem Monat"
+        }
+    }
+    var seconds: TimeInterval? {
+        switch self {
+        case .never: return nil
+        case .hour: return 3600
+        case .day: return 86_400
+        case .week: return 604_800
+        case .month: return 2_592_000
+        }
+    }
+}
+
 /// Bookmarks, history and browser preferences (persisted on the device).
 @MainActor
 final class BrowserLibrary: ObservableObject {
@@ -92,6 +116,13 @@ final class BrowserLibrary: ObservableObject {
 
     @Published var searchEngine: SearchEngine { didSet { d.set(searchEngine.rawValue, forKey: "searchEngine") } }
     @Published var barPosition: BarPosition { didSet { d.set(barPosition.rawValue, forKey: "barPosition") } }
+    @Published var tabLifetime: TabLifetime { didSet { d.set(tabLifetime.rawValue, forKey: "tabLifetime") } }
+    /// Sites removed from "Häufig besucht".
+    @Published private(set) var hiddenFrequent: Set<String> {
+        didSet { d.set(Array(hiddenFrequent), forKey: "hiddenFrequent") }
+    }
+    /// "Häufig besucht" counts visits after this date (reset).
+    @Published private(set) var frequentSince: Date? { didSet { d.set(frequentSince, forKey: "frequentSince") } }
     @Published var adBlock: Bool { didSet { d.set(adBlock, forKey: "adBlock"); BrowserModel.shared.updateContentBlocking() } }
     /// Sites on which the ad blocker is switched off.
     @Published var adBlockExceptions: Set<String> {
@@ -144,6 +175,9 @@ final class BrowserLibrary: ObservableObject {
         ])
         searchEngine = SearchEngine(rawValue: d.string(forKey: "searchEngine") ?? "") ?? .google
         barPosition = BarPosition(rawValue: d.string(forKey: "barPosition") ?? "") ?? .top
+        tabLifetime = TabLifetime(rawValue: d.string(forKey: "tabLifetime") ?? "") ?? .never
+        hiddenFrequent = Set(d.stringArray(forKey: "hiddenFrequent") ?? [])
+        frequentSince = d.object(forKey: "frequentSince") as? Date
         adBlock = d.bool(forKey: "adBlock")
         adBlockExceptions = Set(d.stringArray(forKey: "adBlockExceptions") ?? [])
         mediaButtons = d.bool(forKey: "mediaButtons")
@@ -300,9 +334,9 @@ final class BrowserLibrary: ObservableObject {
     /// Most visited sites of the last weeks (start page).
     func frequentSites(limit: Int = 8) -> [Suggestion] {
         var counts: [String: (count: Int, entry: HistoryEntry)] = [:]
-        let since = Date().addingTimeInterval(-60 * 60 * 24 * 30)
+        let since = max(Date().addingTimeInterval(-60 * 60 * 24 * 30), frequentSince ?? .distantPast)
         for h in history where h.date > since {
-            guard let host = h.url.host?.replacingOccurrences(of: "www.", with: "") else { continue }
+            guard let host = h.url.host?.replacingOccurrences(of: "www.", with: ""), !hiddenFrequent.contains(host) else { continue }
             if let existing = counts[host] {
                 counts[host] = (existing.count + 1, existing.entry)
             } else {
@@ -317,6 +351,18 @@ final class BrowserLibrary: ObservableObject {
                 let root = URL(string: "\(value.entry.url.scheme ?? "https")://\(value.entry.url.host ?? host)") ?? value.entry.url
                 return Suggestion(title: host, url: root, isBookmark: false)
             }
+    }
+
+    func hideFrequent(_ host: String) {
+        hiddenFrequent.insert(host)
+        Haptics.tap()
+    }
+
+    /// Starts "Häufig besucht" from scratch (the history stays).
+    func resetFrequent() {
+        frequentSince = Date()
+        hiddenFrequent = []
+        Haptics.warning()
     }
 
     static func key(_ url: URL) -> String {

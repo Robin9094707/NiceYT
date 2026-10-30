@@ -306,6 +306,54 @@ final class FileDownloads: ObservableObject {
         Haptics.success()
     }
 
+    // MARK: Converting & importing
+
+    /// MPEG-TS files in the library get repackaged as MP4 (playable, shareable to Photos).
+    @discardableResult
+    func convertToMP4(_ file: SavedFile, quiet: Bool = false) -> String {
+        let id = Self.newJobId()
+        jobs[id] = Job(id: id, name: file.name, status: "Wird in MP4 umgewandelt …", source: file.url)
+        if !quiet { onToast?("Wird umgewandelt …") }
+        tasks[id] = Task {
+            defer { tasks[id] = nil }
+            let temp = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString + ".mp4")
+            do {
+                try await TSRemuxer.remux(file.url, to: temp) { [weak self] p in
+                    Task { @MainActor in self?.update(id, progress: p) }
+                }
+                let target = Self.uniqueURL(for: file.name + ".mp4")
+                try FileManager.default.moveItem(at: temp, to: target)
+                jobs[id] = nil
+                let saved = add(target, name: file.name, source: file.source, page: file.page.flatMap(URL.init(string:)),
+                                thumbnail: file.thumbnail.flatMap(URL.init(string:)), site: file.site)
+                finished[id] = saved.id
+                delete(file.id)
+            } catch {
+                try? FileManager.default.removeItem(at: temp)
+                update(id, status: "Umwandeln fehlgeschlagen: \(error.localizedDescription)")
+                jobs[id]?.failed = true
+                Haptics.error()
+            }
+        }
+        return id
+    }
+
+    /// Copies files from the Files app into the library (TS files are converted right away).
+    func importFiles(_ urls: [URL]) {
+        var count = 0
+        for url in urls {
+            let scoped = url.startAccessingSecurityScopedResource()
+            defer { if scoped { url.stopAccessingSecurityScopedResource() } }
+            let target = Self.uniqueURL(for: Self.safe(url.lastPathComponent))
+            guard (try? FileManager.default.copyItem(at: url, to: target)) != nil else { continue }
+            let saved = add(target, name: url.deletingPathExtension().lastPathComponent, source: url.absoluteString, page: nil,
+                            thumbnail: nil, site: "Import")
+            count += 1
+            if saved.fileExtension == "TS" { convertToMP4(saved, quiet: true) }
+        }
+        if count > 1 { onToast?("\(count) Dateien importiert") }
+    }
+
     func deleteAll() {
         tasks.values.forEach { $0.cancel() }
         tasks = [:]
@@ -347,8 +395,13 @@ final class FileDownloads: ObservableObject {
             for (k, v) in request.headers { headers[k] = v }
             do {
                 let isHLS = url.pathExtension.lowercased() == "m3u8" || url.absoluteString.contains(".m3u8")
+                let isDASH = url.pathExtension.lowercased() == "mpd" || url.absoluteString.contains(".mpd")
                 var result: (file: URL, name: String)
-                if isHLS {
+                if isDASH {
+                    update(id, status: "DASH-Stream wird geladen …")
+                    let base = request.name.map { ($0 as NSString).deletingPathExtension } ?? Self.displayName(for: request.page ?? url)
+                    result = (try await DASHDownloader.download(url, headers: headers, progress: report), Self.safe(base) + ".mp4")
+                } else if isHLS {
                     update(id, status: "Stream wird geladen …")
                     let base = request.name.map { ($0 as NSString).deletingPathExtension } ?? Self.displayName(for: request.page ?? url)
                     result = try await HLSDownloader.download(url, headers: headers, name: base, progress: report)
@@ -518,8 +571,15 @@ enum HLSDownloader {
             try await YouTubeDownloader.export(video: video.file, audio: audio?.0 ?? video.file, to: out, fileType: .mp4, metadata: [])
             return (out, base + ".mp4")
         }
-        // MPEG-TS can't be remuxed on iOS without re-encoding – keep it as .ts (VLC, Infuse …).
-        return (video.file, base + ".ts")
+        // MPEG-TS: repackaged into MP4 without re-encoding; kept as .ts if that fails.
+        let out = dir.appendingPathComponent("out.mp4")
+        do {
+            try await TSRemuxer.remux(video.file, to: out)
+            return (out, base + ".mp4")
+        } catch {
+            DebugLog.log("⬇︎ TS → MP4: \(error.localizedDescription)")
+            return (video.file, base + ".ts")
+        }
     }
 
     private static func fetchPlaylist(_ url: URL, headers: [String: String], into file: URL,

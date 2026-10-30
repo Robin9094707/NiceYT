@@ -10,6 +10,9 @@ on:
       - "NiceYT/**"
       - "ShareExtension/**"
       - "project.yml"
+      - "project-uitests.yml"
+      - "UITests/**"
+      - "Tests/**"
       - ".github/workflows/ui-screenshots.yml"
 
 jobs:
@@ -85,3 +88,87 @@ jobs:
           name: screenshots
           path: shots
           retention-days: 7
+
+  ui-test:
+    runs-on: macos-26
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Select newest stable Xcode
+        run: |
+          XC=$(ls -d /Applications/Xcode_*.app | grep -viE 'beta|rc' | sort -V | tail -1)
+          sudo xcode-select -s "$XC/Contents/Developer"
+
+      - name: Generate project with UI tests
+        run: brew install xcodegen && xcodegen generate --spec project-uitests.yml
+
+      - name: Run UI test
+        run: |
+          UDID=$(xcrun simctl list devices available -j | python3 -c "
+          import json, sys
+          d = json.load(sys.stdin)['devices']
+          c = [x for k, v in d.items() if 'iOS-26' in k for x in v if x['name'].startswith('iPhone')]
+          pro = [x for x in c if 'Pro' in x['name'] and 'Max' not in x['name']]
+          print(sorted(pro or c, key=lambda x: x['name'])[-1]['udid'])")
+          xcrun simctl boot "$UDID" || true
+          xcrun simctl ui "$UDID" appearance dark || true
+          set -o pipefail
+          xcodebuild test -project NiceYT.xcodeproj -scheme NovaUITests -destination "id=$UDID" \
+            -resultBundlePath result.xcresult CODE_SIGN_IDENTITY=- CODE_SIGNING_REQUIRED=NO CODE_SIGNING_ALLOWED=YES \
+            'OTHER_SWIFT_FLAGS=$(inherited) -DNOVA_SCREENSHOTS' 2>&1 | tee test.log | grep -E "error:|Test Case|failed|passed|XCTAssert|TEST (SUCCEEDED|FAILED)" || true
+
+      - name: Export screenshots
+        if: always()
+        run: |
+          mkdir -p uitest
+          xcrun xcresulttool export attachments --path result.xcresult --output-path uitest || true
+          cp test.log uitest/ || true
+          ls -la uitest
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: uitest
+          path: uitest
+          retention-days: 7
+
+  media:
+    runs-on: macos-26
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Select newest stable Xcode
+        run: |
+          XC=$(ls -d /Applications/Xcode_*.app | grep -viE 'beta|rc' | sort -V | tail -1)
+          sudo xcode-select -s "$XC/Contents/Developer"
+
+      - name: Make test media with ffmpeg
+        run: |
+          command -v ffmpeg || brew install ffmpeg
+          mkdir -p media && cd media
+          SRC="-f lavfi -i testsrc2=duration=6:size=640x360:rate=30 -f lavfi -i sine=frequency=440:duration=6"
+          ffmpeg -hide_banner -loglevel error $SRC -map 0:v -map 1:a -c:v libx264 -bf 2 -g 30 -c:a aac -b:a 128k -f mpegts h264.ts
+          ffmpeg -hide_banner -loglevel error $SRC -map 0:v -map 1:a -c:v libx265 -g 30 -c:a aac -b:a 128k -f mpegts hevc.ts
+          ffmpeg -hide_banner -loglevel error -f lavfi -i sine=frequency=440:duration=6 -c:a aac -f mpegts audio.ts
+          for mode in timeline number single; do
+            case $mode in
+              timeline) FLAGS="-use_template 1 -use_timeline 1" ;;
+              number) FLAGS="-use_template 1 -use_timeline 0" ;;
+              single) FLAGS="-single_file 1" ;;
+            esac
+            mkdir -p $mode
+            ffmpeg -hide_banner -loglevel error $SRC -map 0:v -map 1:a -c:v libx264 -g 30 -c:a aac \
+              -f dash -seg_duration 2 $FLAGS $mode/manifest.mpd
+          done
+          ls -la . timeline number single
+          head -c 1500 timeline/manifest.mpd
+
+      - name: Build and run media tests
+        run: |
+          swiftc -swift-version 5 -O NiceYT/Browser/TSRemuxer.swift NiceYT/Browser/DASHDownloader.swift \
+            Tests/MediaTests/main.swift -o mediatests
+          (cd media && python3 -m http.server 8765 --bind 127.0.0.1 >/dev/null 2>&1 &)
+          sleep 2
+          ./mediatests media

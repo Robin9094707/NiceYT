@@ -162,7 +162,7 @@ private struct BrowserTabView: View {
         if !addressFocused {
             GlassEffectContainer {
                 HStack(spacing: 0) {
-                    roundButton("xmark", label: "Browser schließen") { model.isPresented = false }
+                    shareButton
                     Spacer(minLength: 0)
                     backButton
                     Spacer(minLength: 0)
@@ -241,6 +241,22 @@ private struct BrowserTabView: View {
                     }
                 }
             }
+    }
+
+    /// Shares the page that's open (on the start page: closes the browser).
+    @ViewBuilder private var shareButton: some View {
+        if let url = tab.url, !tab.showStart {
+            ShareLink(item: url, subject: Text(tab.title), message: Text(tab.title)) {
+                Image(systemName: "square.and.arrow.up")
+                    .font(.body.weight(.semibold))
+                    .frame(width: 46, height: 46)
+                    .contentShape(.rect)
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel("Teilen")
+        } else {
+            roundButton("xmark", label: "Browser schließen") { model.isPresented = false }
+        }
     }
 
     /// Download assistant in the bottom toolbar.
@@ -734,13 +750,21 @@ private struct StartPage: View {
                 }
                 let frequent = tab.isPrivate ? [] : library.frequentSites(limit: 8)
                 if !frequent.isEmpty {
-                    section("Häufig besucht") {
+                    section("Häufig besucht", action: ("Zurücksetzen", {
+                        ConfirmCenter.shared.ask("„Häufig besucht“ zurücksetzen?",
+                                                 message: "Die Liste fängt neu an. Dein Verlauf bleibt erhalten.",
+                                                 action: "Zurücksetzen") { library.resetFrequent() }
+                    })) {
                         LazyVGrid(columns: columns, spacing: 16) {
                             ForEach(frequent) { s in
                                 Button { tab.load(s.url) } label: { SiteTile(title: s.title, url: s.url) }
                                     .buttonStyle(.plain)
                                     .contextMenu {
+                                        Button("In neuem Tab öffnen", systemImage: "plus.square.on.square") { model.newTab(s.url) }
                                         Button("Zu Favoriten", systemImage: "star") { library.addBookmark(title: s.title, url: s.url, favorite: true) }
+                                        Button("Aus „Häufig besucht“ entfernen", systemImage: "eye.slash", role: .destructive) {
+                                            withAnimation(.snappy) { library.hideFrequent(s.title) }
+                                        }
                                     }
                             }
                         }
@@ -892,9 +916,17 @@ private struct StartPage: View {
         .glassEffect(.regular, in: .rect(cornerRadius: 22))
     }
 
-    private func section<Content: View>(_ title: String, @ViewBuilder content: () -> Content) -> some View {
+    private func section<Content: View>(_ title: String, action: (String, () -> Void)? = nil,
+                                        @ViewBuilder content: () -> Content) -> some View {
         VStack(alignment: .leading, spacing: 12) {
-            Text(title).font(.title3.weight(.bold))
+            HStack {
+                Text(title).font(.title3.weight(.bold))
+                Spacer()
+                if let action {
+                    Button(action.0, action: action.1)
+                        .font(.subheadline.weight(.semibold))
+                }
+            }
             content()
         }
     }
@@ -974,6 +1006,7 @@ private struct TabOverview: View {
                     HStack {
                         Button { newTab() } label: {
                             Image(systemName: "plus").font(.title3.weight(.semibold)).frame(width: 52, height: 52)
+                                .contentShape(.circle)
                         }
                         .buttonStyle(.plain)
                         .glassEffect(.regular.interactive(), in: .circle)
@@ -996,8 +1029,9 @@ private struct TabOverview: View {
     }
 
     private func newTab() {
-        model.newTab(isPrivate: showPrivate)
-        dismiss()
+        let isPrivate = showPrivate
+        model.showTabs = false
+        model.newTab(isPrivate: isPrivate)
     }
 }
 
