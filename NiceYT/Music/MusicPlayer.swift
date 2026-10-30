@@ -426,7 +426,7 @@ final class MusicSearchRequest: ObservableObject {
     }
 
     /// Strips video noise like "(Official Music Video)", "[4K]" or "| Lyrics".
-    static func clean(_ title: String) -> String {
+    nonisolated static func clean(_ title: String) -> String {
         var s = title
         for pattern in [#"\([^)]*\)"#, #"\[[^\]]*\]"#, #"(?i)\b(official|offizielles?|music|musik|video|lyrics?|audio|visualizer|hd|4k)\b"#] {
             s = s.replacingOccurrences(of: pattern, with: " ", options: .regularExpression)
