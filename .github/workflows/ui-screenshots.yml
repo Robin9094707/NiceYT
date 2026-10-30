@@ -4,6 +4,13 @@ name: UI screenshots
 # (browser, new tab, tab overview, download assistant) – for checking the UI.
 on:
   workflow_dispatch:
+  push:
+    branches-ignore: [main]
+    paths:
+      - "NiceYT/**"
+      - "ShareExtension/**"
+      - "project.yml"
+      - ".github/workflows/ui-screenshots.yml"
 
 jobs:
   screenshots:
