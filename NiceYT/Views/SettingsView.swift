@@ -140,6 +140,19 @@ struct SettingsView: View {
                     Text("Zeigt, welche Stream-Quelle funktioniert oder warum ein Video nicht startet. Über „Senden“ kannst du das Protokoll weitergeben.")
                 }
 
+                Section {
+                    NavigationLink {
+                        DataResetView()
+                    } label: {
+                        Label("Daten löschen …", systemImage: "trash")
+                            .foregroundStyle(.red)
+                    }
+                } header: {
+                    Text("Konten & Daten")
+                } footer: {
+                    Text("YouTube, Deezer oder Spotify einzeln zurücksetzen – oder alles löschen und neu anfangen.")
+                }
+
                 Section("Speicher") {
                     Button("Bild-Cache leeren", systemImage: "trash") {
                         URLCache.shared.removeAllCachedResponses()

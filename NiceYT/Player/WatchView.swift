@@ -108,6 +108,7 @@ struct WatchView: View {
             }
         }
         .youTubeDownloadSheet(active: player.isPresented)
+        .confirmations(active: player.isPresented && ytDownloads.request == nil)
         .sheet(isPresented: $showDescription) {
             DescriptionSheet()
                 .presentationDetents([.medium, .large])

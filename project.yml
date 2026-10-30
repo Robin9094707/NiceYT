@@ -8,8 +8,8 @@ options:
 settings:
   base:
     SWIFT_VERSION: "5.0"
-    MARKETING_VERSION: "1.4.0"
-    CURRENT_PROJECT_VERSION: "5"
+    MARKETING_VERSION: "1.5.0"
+    CURRENT_PROJECT_VERSION: "6"
     DEVELOPMENT_TEAM: ""
 targets:
   NiceYT:
@@ -50,6 +50,7 @@ targets:
         ITSAppUsesNonExemptEncryption: false
         UIFileSharingEnabled: true
         LSSupportsOpeningDocumentsInPlace: true
+        NSPhotoLibraryAddUsageDescription: "NicePlay sichert heruntergeladene Videos auf Wunsch in deiner Fotomediathek."
         CFBundleURLTypes:
           - CFBundleURLName: com.robin.niceyt
             CFBundleURLSchemes: [niceyt]

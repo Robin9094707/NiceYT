@@ -110,8 +110,18 @@ final class DownloadStore: ObservableObject {
     private func run(_ track: DZTrack) async {
         defer { if progress[track.id] == nil { active[track.id] = nil } }
         do {
+            // Spotify songs come from Deezer (same recording by ISRC) or from YouTube.
+            var source = track
+            if !track.isDeezer {
+                if !track.isYouTube, MusicStore.shared.isLoggedIn, let match = await TrackMatcher.shared.deezer(for: track) {
+                    source = match
+                } else {
+                    try await downloadFromYouTube(track)
+                    return
+                }
+            }
             let quality = AppSettings.shared.musicDownloadQuality
-            let media = try await Deezer.shared.mediaURL(for: track, quality: quality)
+            let media = try await Deezer.shared.mediaURL(for: source, quality: quality)
             guard progress[track.id] != nil else { return } // cancelled meanwhile
             let delegate = ProgressDelegate { [weak self] value in
                 Task { @MainActor in
@@ -124,12 +134,13 @@ final class DownloadStore: ObservableObject {
             let (temp, response) = try await session.download(for: request, delegate: delegate)
             let status = (response as? HTTPURLResponse)?.statusCode ?? 0
             guard (200..<300).contains(status) else { throw DeezerError.http(status) }
-            let cover = await coverData(for: track)
+            var cover = await coverData(for: track)
+            if cover == nil, source.id != track.id { cover = await coverData(for: source) }
             let fileName = Self.fileName(for: track, quality: media.quality)
             let target = Self.folder.appendingPathComponent(fileName)
             let size = try await Task.detached(priority: .utility) {
                 try Self.decryptAndTag(temp, to: target, trackId: media.track.id, quality: media.quality,
-                                       tags: AudioTagger.Tags(track, cover: cover))
+                                       tags: AudioTagger.Tags(source.isDeezer && !track.isDeezer ? source : track, cover: cover))
             }.value
             guard progress[track.id] != nil else {
                 try? FileManager.default.removeItem(at: target)
@@ -146,6 +157,50 @@ final class DownloadStore: ObservableObject {
             Haptics.error()
             MusicPlayer.shared.toast("„\(track.title)“: \(error.localizedDescription)")
         }
+    }
+
+    /// Audio of the best matching YouTube upload, saved as M4A with the song's tags and cover.
+    private func downloadFromYouTube(_ track: DZTrack) async throws {
+        guard let videoId = await TrackMatcher.shared.youtube(for: track) else {
+            throw YTError.unplayable("Keine passende Quelle gefunden")
+        }
+        let src = try await YouTubeDownloader.sources(videoId)
+        guard progress[track.id] != nil else { return }
+        let dir = FileManager.default.temporaryDirectory.appendingPathComponent("dl-" + UUID().uuidString, isDirectory: true)
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let id = track.id
+        let report: @Sendable (Double) -> Void = { [weak self] p in
+            Task { @MainActor in
+                guard let self, let old = self.progress[id], p * 0.95 - old > 0.01 else { return }
+                self.progress[id] = p * 0.95
+            }
+        }
+        let audioFile: URL
+        if let audio = src.audio {
+            audioFile = dir.appendingPathComponent("audio.m4a")
+            let expected = Double(audio.format.contentLength ?? 0)
+            try await YouTubeDownloader.fetch(audio.url, to: audioFile, userAgent: src.userAgent,
+                                              expected: audio.format.contentLength) { bytes in
+                report(expected > 0 ? Double(bytes) / expected : 0)
+            }
+        } else {
+            audioFile = try await YouTubeDownloader.fetchHLS(src, height: nil, dir: dir, progress: report).audio
+        }
+        guard progress[track.id] != nil else { return }
+        var cover = await coverData(for: track)
+        if cover == nil { cover = await YouTubeDownloader.squareCover(videoId) }
+        let fileName = String(Self.fileName(for: track, quality: .mp3_128).dropLast(4)) + ".m4a"
+        let target = Self.folder.appendingPathComponent(fileName)
+        try await YouTubeDownloader.export(video: nil, audio: audioFile, to: target, fileType: .m4a,
+                                           metadata: YouTubeDownloader.metadata(title: track.fullTitle, artist: track.artistLine,
+                                                                                album: track.album.isEmpty ? nil : track.album, cover: cover))
+        let size = ((try? FileManager.default.attributesOfItem(atPath: target.path))?[.size] as? NSNumber)?.int64Value ?? 0
+        progress[track.id] = nil
+        items.removeAll { $0.id == track.id }
+        items.insert(DownloadedTrack(track: track, fileName: fileName, quality: nil, size: size, date: Date()), at: 0)
+        save()
+        if pending.isEmpty, running <= 1 { Haptics.success() }
     }
 
     private func coverData(for track: DZTrack) async -> Data? {
@@ -204,6 +259,13 @@ final class DownloadStore: ObservableObject {
         items.removeAll { $0.id == trackId }
         save()
         Haptics.tap()
+    }
+
+    /// Removes the downloads matching `filter` (e.g. only Deezer or only Spotify songs).
+    func delete(where filter: (DownloadedTrack) -> Bool) {
+        for item in items where filter(item) { try? FileManager.default.removeItem(at: item.url) }
+        items.removeAll(where: filter)
+        save()
     }
 
     func deleteAll() {

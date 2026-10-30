@@ -4,6 +4,7 @@ import SwiftUI
 struct TrackListView: View {
     enum Source: Hashable {
         case album(String), playlist(String), favorites, charts
+        case spotifyPlaylist(String), spotifyAlbum(String), spotifyLiked
     }
 
     @EnvironmentObject private var music: MusicPlayer
@@ -26,7 +27,12 @@ struct TrackListView: View {
         return tracks.filter { $0.title.localizedCaseInsensitiveContains(filter) || $0.artistLine.localizedCaseInsensitiveContains(filter) }
     }
 
-    private var isAlbum: Bool { if case .album = source { return true } else { return false } }
+    private var isAlbum: Bool {
+        switch source {
+        case .album, .spotifyAlbum: return true
+        default: return false
+        }
+    }
 
     var body: some View {
         ScrollView {
@@ -76,8 +82,9 @@ struct TrackListView: View {
     private var header: some View {
         VStack(spacing: 14) {
             Group {
-                if source == .favorites {
-                    LinearGradient(colors: [.pink, .purple], startPoint: .topLeading, endPoint: .bottomTrailing)
+                if source == .favorites || source == .spotifyLiked {
+                    LinearGradient(colors: source == .favorites ? [.pink, .purple] : [.green, .teal],
+                                   startPoint: .topLeading, endPoint: .bottomTrailing)
                         .overlay { Image(systemName: "heart.fill").font(.system(size: 80)).foregroundStyle(.white) }
                 } else {
                     RemoteImage(url: image)
@@ -159,6 +166,24 @@ struct TrackListView: View {
                 title = "Lieblingssongs"
                 subtitle = store.user?.name ?? ""
                 tracks = try await Deezer.shared.favoriteTracks()
+            case .spotifyPlaylist(let id):
+                let (playlist, list) = try await Spotify.shared.playlist(id)
+                tracks = list
+                title = playlist?.name ?? "Playlist"
+                subtitle = (playlist?.owner.map { "von \($0) · " } ?? "") + "Spotify"
+                image = playlist?.imageURL ?? list.first?.coverURL()
+                shareURL = playlist?.shareURL
+            case .spotifyAlbum(let id):
+                let (album, list) = try await Spotify.shared.album(id)
+                tracks = list
+                title = album?.name ?? "Album"
+                subtitle = [album?.artist, album?.year].compactMap { $0 }.joined(separator: " · ")
+                image = album?.imageURL
+                shareURL = album?.shareURL
+            case .spotifyLiked:
+                title = "Lieblingssongs"
+                subtitle = "Spotify · \(store.spotifyUser?.name ?? "")"
+                tracks = try await Spotify.shared.likedTracks()
             case .charts:
                 title = "Top-Charts"
                 subtitle = "Die 100 meistgehörten Songs"
@@ -337,7 +362,11 @@ struct DownloadsView: View {
                     ForEach(shown) { d in
                         TrackRow(track: d.track, list: shown.map(\.track))
                             .swipeActions(edge: .trailing) {
-                                Button("Löschen", systemImage: "trash", role: .destructive) { downloads.delete(d.id) }
+                                Button("Löschen", systemImage: "trash", role: .destructive) {
+                                    ConfirmCenter.shared.ask("„\(d.track.title)“ löschen?", message: "Die Datei wird vom Gerät entfernt.") {
+                                        downloads.delete(d.id)
+                                    }
+                                }
                             }
                             .swipeActions(edge: .leading) {
                                 ShareLink(item: d.url) { Label("Teilen", systemImage: "square.and.arrow.up") }
@@ -359,6 +388,7 @@ struct DownloadsView: View {
                 ToolbarItem(placement: .topBarTrailing) {
                     Menu {
                         ShareLink(items: shown.map(\.url)) { Label("Alle teilen", systemImage: "square.and.arrow.up.on.square") }
+                        Button("Alle in Dateien sichern", systemImage: "folder") { FileSaver.saveToFiles(shown.map(\.url)) }
                         Button("Alle löschen", systemImage: "trash", role: .destructive) { confirmDeleteAll = true }
                     } label: {
                         Image(systemName: "ellipsis")

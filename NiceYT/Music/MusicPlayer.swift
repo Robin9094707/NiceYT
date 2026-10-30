@@ -292,15 +292,21 @@ final class MusicPlayer: ObservableObject {
             if await start(item, at: position, label: "Datei") { return }
         }
         isOffline = false
-        guard !track.isYouTube else {
-            isLoading = false
-            toast("Die Datei von „\(track.title)“ ist nicht mehr vorhanden")
-            return
+        // Spotify songs: same recording on Deezer (ISRC) if connected, else YouTube.
+        var source = track
+        if !track.isDeezer {
+            if !track.isYouTube, MusicStore.shared.isLoggedIn, let match = await TrackMatcher.shared.deezer(for: track) {
+                guard !Task.isCancelled, current?.id == track.id else { return }
+                source = match
+            } else {
+                await playFromYouTube(track, at: position)
+                return
+            }
         }
         var wanted = AppSettings.shared.musicStreamQuality
         for _ in 0..<2 {
             do {
-                let media = try await Deezer.shared.mediaURL(for: track, quality: wanted)
+                let media = try await Deezer.shared.mediaURL(for: source, quality: wanted)
                 guard !Task.isCancelled, current?.id == track.id else { return }
                 let loader = DeezerStreamLoader(source: media.url, trackId: media.track.id, quality: media.quality)
                 let asset = AVURLAsset(url: DeezerStreamLoader.assetURL(trackId: media.track.id, quality: media.quality))
@@ -324,6 +330,45 @@ final class MusicPlayer: ObservableObject {
                 toast("„\(track.title)“: \(error.localizedDescription)")
                 return
             }
+        }
+    }
+
+    /// Streams the audio of the matching YouTube video (same sources as the video player).
+    private func playFromYouTube(_ track: DZTrack, at position: Double?) async {
+        guard let videoId = await TrackMatcher.shared.youtube(for: track) else {
+            guard current?.id == track.id else { return }
+            isLoading = false
+            Haptics.error()
+            toast("Für „\(track.title)“ wurde keine Quelle gefunden")
+            return
+        }
+        do {
+            let src = try await YouTubeDownloader.sources(videoId)
+            guard !Task.isCancelled, current?.id == track.id else { return }
+            var items: [AVPlayerItem] = []
+            if let audio = src.audio {
+                let asset = AVURLAsset(url: audio.url, options: ["AVURLAssetHTTPHeaderFieldsKey": ["User-Agent": src.userAgent]])
+                items.append(AVPlayerItem(asset: asset))
+            }
+            if let hls = src.hlsURL {
+                let asset = AVURLAsset(url: hls, options: ["AVURLAssetHTTPHeaderFieldsKey": ["User-Agent": src.userAgent]])
+                let item = AVPlayerItem(asset: asset)
+                item.preferredMaximumResolution = CGSize(width: 256, height: 144)
+                items.append(item)
+            }
+            for item in items {
+                if await start(item, at: position, label: "YouTube") {
+                    quality = nil
+                    return
+                }
+                guard !Task.isCancelled, current?.id == track.id else { return }
+            }
+            throw DeezerError.noStream
+        } catch {
+            guard !Task.isCancelled, current?.id == track.id else { return }
+            isLoading = false
+            Haptics.error()
+            toast("„\(track.title)“: \(error.localizedDescription)")
         }
     }
 
@@ -459,4 +504,9 @@ enum MusicRoute: Hashable {
     case favorites
     case charts
     case downloads
+    case spotifyPlaylist(String)
+    case spotifyAlbum(String)
+    case spotifyLiked
+    case videoDownloads
+    case dataReset
 }

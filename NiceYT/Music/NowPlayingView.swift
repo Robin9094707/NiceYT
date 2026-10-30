@@ -57,6 +57,7 @@ struct NowPlayingView: View {
         .environment(\.colorScheme, .dark)
         .background { NowPlayingBackground(url: music.current?.coverURL(500)) }
         .animation(.spring(response: 0.42, dampingFraction: 0.86), value: panel)
+        .confirmations(active: music.showNowPlaying)
         .overlay(alignment: .top) {
             if let toast = music.toastText {
                 Text(toast)
@@ -184,7 +185,7 @@ struct NowPlayingView: View {
     }
 
     @ViewBuilder private func favoriteButton(_ track: DZTrack, size: CGFloat) -> some View {
-        if !track.isYouTube {
+        if track.isDeezer {
             let isFav = store.isFavorite(track.id)
             Button { store.toggleFavorite(track) } label: {
                 Image(systemName: isFav ? "heart.fill" : "heart")
@@ -441,9 +442,12 @@ private struct LyricsPanel: View {
     private func load() async {
         guard loadedId != track.id else { return }
         lyrics = nil
-        guard !track.isYouTube else { loadedId = track.id; return }
         isLoading = true
-        lyrics = try? await Deezer.shared.lyrics(track.id)
+        var deezerId: String? = track.isDeezer ? track.id : nil
+        if deezerId == nil, !track.isYouTube, MusicStore.shared.isLoggedIn {
+            deezerId = await TrackMatcher.shared.deezer(for: track)?.id
+        }
+        if let deezerId { lyrics = try? await Deezer.shared.lyrics(deezerId) }
         loadedId = track.id
         isLoading = false
     }

@@ -1,18 +1,24 @@
 import SwiftUI
 
-/// The "Musik" tab: Deezer start page, search and navigation.
+/// The "Musik" tab: Deezer and/or Spotify, downloads – usable without any account too.
 struct MusicView: View {
     @EnvironmentObject private var store: MusicStore
     @EnvironmentObject private var music: MusicPlayer
     @EnvironmentObject private var downloads: DownloadStore
     @EnvironmentObject private var settings: AppSettings
+    @EnvironmentObject private var ytDownloads: YouTubeDownloads
     @ObservedObject private var router = MusicRouter.shared
     @ObservedObject private var request = MusicSearchRequest.shared
     @State private var query = ""
     @State private var results = DZSearchResult()
+    @State private var spResults = SPSearchResult()
     @State private var isSearching = false
     @State private var scope: SearchScope = .all
+    @State private var searchSource: SearchSource = .deezer
     @State private var confirmLogout = false
+    @State private var confirmSpotifyLogout = false
+    @State private var showDeezerLogin = false
+    @State private var showSpotifyLogin = false
 
     enum SearchScope: String, CaseIterable, Identifiable {
         case all, tracks, albums, artists, playlists
@@ -28,14 +34,27 @@ struct MusicView: View {
         }
     }
 
+    enum SearchSource: String, CaseIterable, Identifiable {
+        case deezer, spotify
+        var id: String { rawValue }
+        var title: String { self == .deezer ? "Deezer" : "Spotify" }
+    }
+
+    /// Search goes to Spotify when only Spotify is connected (or chosen).
+    private var effectiveSource: SearchSource {
+        if store.user == nil { return .spotify }
+        if store.spotifyUser == nil { return .deezer }
+        return searchSource
+    }
+
     var body: some View {
         NavigationStack(path: $router.path) {
             Group {
-                if store.user == nil {
+                if !store.hasAnySource {
                     if store.isRestoring {
-                        ProgressView("Verbinde mit Deezer …").frame(maxWidth: .infinity, maxHeight: .infinity)
+                        ProgressView("Verbinde …").frame(maxWidth: .infinity, maxHeight: .infinity)
                     } else {
-                        DeezerLoginView()
+                        welcome
                     }
                 } else if !query.trimmingCharacters(in: .whitespaces).isEmpty {
                     searchResults
@@ -44,17 +63,42 @@ struct MusicView: View {
                 }
             }
             .navigationTitle("Musik")
-            .toolbar { if store.user != nil { ToolbarItem(placement: .topBarTrailing) { accountMenu } } }
+            .toolbar { ToolbarItem(placement: .topBarTrailing) { accountMenu } }
             .navigationDestination(for: MusicRoute.self) { MusicRouteView(route: $0) }
-            .modifier(MusicSearchable(enabled: store.user != nil, query: $query))
-            .task(id: query) { await search() }
+            .modifier(MusicSearchable(enabled: store.hasAnySource, query: $query))
+            .task(id: "\(query)|\(effectiveSource.rawValue)") { await search() }
             .confirmationDialog("Von Deezer abmelden?", isPresented: $confirmLogout, titleVisibility: .visible) {
                 Button("Abmelden", role: .destructive) { Task { await store.logout() } }
             } message: {
                 Text("Heruntergeladene Songs bleiben auf dem Gerät.")
             }
+            .confirmationDialog("Spotify trennen?", isPresented: $confirmSpotifyLogout, titleVisibility: .visible) {
+                Button("Trennen", role: .destructive) { Task { await store.disconnectSpotify() } }
+            } message: {
+                Text("Heruntergeladene Songs bleiben auf dem Gerät.")
+            }
+            .sheet(isPresented: $showDeezerLogin) {
+                NavigationStack {
+                    DeezerLoginView()
+                        .navigationTitle("Deezer")
+                        .navigationBarTitleDisplayMode(.inline)
+                        .toolbar {
+                            ToolbarItem(placement: .cancellationAction) {
+                                Button("Schließen", systemImage: "xmark") { showDeezerLogin = false }
+                            }
+                        }
+                }
+                .environmentObject(store)
+            }
+            .sheet(isPresented: $showSpotifyLogin) {
+                SpotifyLoginView().environmentObject(store)
+            }
         }
-        .task { await store.restore() }
+        .task {
+            await store.restore()
+            await store.restoreSpotify()
+        }
+        .onChange(of: store.user) { _, user in if user != nil { showDeezerLogin = false } }
         .onChange(of: request.token) {
             router.path = NavigationPath()
             query = request.query
@@ -65,32 +109,109 @@ struct MusicView: View {
 
     private var accountMenu: some View {
         Menu {
-            if let u = store.user {
-                Section(u.name + (u.offerName.map { " · \($0)" } ?? "")) {
-                    Label(u.canStreamLossless ? "FLAC verfügbar" : u.canStreamHQ ? "320 kbit/s verfügbar" : "128 kbit/s",
-                          systemImage: "waveform")
+            Section("Deezer") {
+                if let u = store.user {
+                    Label(u.name + " · " + (u.canStreamLossless ? "FLAC" : u.canStreamHQ ? "320 kbit/s" : "128 kbit/s"),
+                          systemImage: "checkmark.circle.fill")
+                    Picker(selection: $settings.musicStreamQuality) {
+                        ForEach(DZQuality.allCases) { Text($0.label).tag($0) }
+                    } label: {
+                        Label("Streaming-Qualität", systemImage: "antenna.radiowaves.left.and.right")
+                    }
+                    .pickerStyle(.menu)
+                    Picker(selection: $settings.musicDownloadQuality) {
+                        ForEach(DZQuality.allCases) { Text($0.label).tag($0) }
+                    } label: {
+                        Label("Download-Qualität", systemImage: "arrow.down.circle")
+                    }
+                    .pickerStyle(.menu)
+                    Button("Von Deezer abmelden", systemImage: "rectangle.portrait.and.arrow.right", role: .destructive) {
+                        confirmLogout = true
+                    }
+                } else {
+                    Button("Deezer verbinden", systemImage: "plus.circle") { showDeezerLogin = true }
                 }
             }
-            Picker(selection: $settings.musicStreamQuality) {
-                ForEach(DZQuality.allCases) { Text($0.label).tag($0) }
-            } label: {
-                Label("Streaming-Qualität", systemImage: "antenna.radiowaves.left.and.right")
+            Section("Spotify") {
+                if let u = store.spotifyUser {
+                    Label(u.name + (u.product.map { " · \($0.capitalized)" } ?? ""), systemImage: "checkmark.circle.fill")
+                    Button("Spotify trennen", systemImage: "rectangle.portrait.and.arrow.right", role: .destructive) {
+                        confirmSpotifyLogout = true
+                    }
+                } else {
+                    Button("Spotify verbinden", systemImage: "plus.circle") { showSpotifyLogin = true }
+                }
             }
-            .pickerStyle(.menu)
-            Picker(selection: $settings.musicDownloadQuality) {
-                ForEach(DZQuality.allCases) { Text($0.label).tag($0) }
-            } label: {
-                Label("Download-Qualität", systemImage: "arrow.down.circle")
+            Section {
+                Button("Daten löschen …", systemImage: "trash") { router.path.append(MusicRoute.dataReset) }
             }
-            .pickerStyle(.menu)
-            Button("Abmelden", systemImage: "rectangle.portrait.and.arrow.right", role: .destructive) { confirmLogout = true }
         } label: {
-            if let url = store.user?.pictureURL {
+            if let url = store.user?.pictureURL ?? store.spotifyUser?.imageURL {
                 Avatar(url: url, size: 30)
             } else {
                 Image(systemName: "person.crop.circle")
             }
         }
+    }
+
+    // MARK: Welcome (no account)
+
+    private var welcome: some View {
+        ScrollView {
+            VStack(spacing: 22) {
+                VStack(spacing: 10) {
+                    Image(systemName: "music.note.list")
+                        .font(.system(size: 50, weight: .semibold))
+                        .foregroundStyle(LinearGradient(colors: [.pink, .purple, .indigo], startPoint: .topLeading, endPoint: .bottomTrailing))
+                        .frame(width: 104, height: 104)
+                        .glassEffect(.regular, in: .circle)
+                    Text("Deine Musik").font(.title.weight(.bold))
+                    Text("Verbinde Deezer, Spotify oder beides. Deine Downloads kannst du jederzeit auch ohne Konto hören.")
+                        .font(.callout)
+                        .foregroundStyle(.secondary)
+                        .multilineTextAlignment(.center)
+                }
+                .padding(.top, 16)
+
+                VStack(spacing: 12) {
+                    Button { showDeezerLogin = true } label: {
+                        SourceCard(title: "Deezer verbinden", subtitle: "Streamen & herunterladen bis FLAC",
+                                   icon: "waveform", colors: [.purple, .pink])
+                    }
+                    Button { showSpotifyLogin = true } label: {
+                        SourceCard(title: "Spotify verbinden", subtitle: "Playlists & Lieblingssongs übernehmen",
+                                   icon: "dot.radiowaves.left.and.right", colors: [.green, .mint])
+                    }
+                }
+                .buttonStyle(.plain)
+
+                offlineTiles
+
+                Button { router.path.append(MusicRoute.dataReset) } label: {
+                    Label("Daten löschen …", systemImage: "trash").font(.footnote.weight(.semibold))
+                }
+                .buttonStyle(.plain)
+                .foregroundStyle(.secondary)
+                .padding(.top, 6)
+            }
+            .padding(20)
+            .frame(maxWidth: 560)
+            .frame(maxWidth: .infinity)
+        }
+    }
+
+    private var offlineTiles: some View {
+        LazyVGrid(columns: [GridItem(.flexible(), spacing: 12), GridItem(.flexible(), spacing: 12)], spacing: 12) {
+            NavigationLink(value: MusicRoute.downloads) {
+                QuickTile(title: "Downloads", subtitle: downloads.items.isEmpty ? "Offline hören" : "\(downloads.items.count) Songs",
+                          icon: "arrow.down.circle.fill", colors: [.teal, .blue])
+            }
+            NavigationLink(value: MusicRoute.videoDownloads) {
+                QuickTile(title: "Videos", subtitle: ytDownloads.videos.isEmpty ? "YouTube offline" : "\(ytDownloads.videos.count) Videos",
+                          icon: "film.stack.fill", colors: [.red, .orange])
+            }
+        }
+        .buttonStyle(.plain)
     }
 
     // MARK: Home
@@ -99,20 +220,26 @@ struct MusicView: View {
         ScrollView {
             VStack(alignment: .leading, spacing: 26) {
                 if let problem = store.sessionProblem {
-                    HStack(spacing: 12) {
-                        Image(systemName: "wifi.exclamationmark").font(.title3).foregroundStyle(.orange)
-                        Text(problem).font(.footnote)
-                        Spacer(minLength: 0)
-                        Button("Erneut") { Task { await store.retrySession() } }
-                            .buttonStyle(.glass)
-                            .font(.footnote.weight(.semibold))
-                    }
-                    .padding(12)
-                    .glassEffect(.regular.tint(.orange.opacity(0.15)), in: .rect(cornerRadius: 18))
+                    banner(problem) { Task { await store.retrySession() } }
                 }
+                if let problem = store.spotifyProblem {
+                    banner("Spotify: " + problem) { Task { await store.loadSpotify(force: true) } }
+                }
+                sourceChips
                 quickTiles
+                if !store.spotifyPlaylists.isEmpty {
+                    shelf("Spotify-Playlists") {
+                        ForEach(store.spotifyPlaylists) { p in
+                            NavigationLink(value: MusicRoute.spotifyPlaylist(p.id)) {
+                                CollectionTile(title: p.name, subtitle: p.trackCount.map { "\($0) Songs" } ?? p.owner, image: p.imageURL)
+                            }
+                            .buttonStyle(.plain)
+                            .contextMenu { CollectionMenu(shareURL: p.shareURL, load: { try await Spotify.shared.playlist(p.id).1 }) }
+                        }
+                    }
+                }
                 if !store.playlists.isEmpty {
-                    shelf("Deine Playlists") {
+                    shelf("Deezer-Playlists") {
                         ForEach(store.playlists) { p in
                             NavigationLink(value: MusicRoute.playlist(p.id)) {
                                 CollectionTile(title: p.title, subtitle: p.trackCount.map { "\($0) Songs" }, image: p.pictureURL(500))
@@ -159,37 +286,92 @@ struct MusicView: View {
                         }
                     }
                 }
-                if store.isLoadingHome, store.charts.isEmpty {
-                    ProgressView().frame(maxWidth: .infinity).padding(.top, 30)
-                } else if let e = store.homeError {
-                    ErrorState(message: e) { Task { await store.loadHome(force: true) } }
+                if store.user != nil {
+                    if store.isLoadingHome, store.charts.isEmpty {
+                        ProgressView().frame(maxWidth: .infinity).padding(.top, 30)
+                    } else if let e = store.homeError {
+                        ErrorState(message: e) { Task { await store.loadHome(force: true) } }
+                    }
                 }
             }
             .padding(16)
             .padding(.bottom, 20)
         }
-        .refreshable { await store.loadHome(force: true) }
+        .refreshable {
+            await store.loadHome(force: true)
+            await store.loadSpotify(force: true)
+        }
+    }
+
+    private func banner(_ text: String, retry: @escaping () -> Void) -> some View {
+        HStack(spacing: 12) {
+            Image(systemName: "wifi.exclamationmark").font(.title3).foregroundStyle(.orange)
+            Text(text).font(.footnote)
+            Spacer(minLength: 0)
+            Button("Erneut", action: retry)
+                .buttonStyle(.glass)
+                .font(.footnote.weight(.semibold))
+        }
+        .padding(12)
+        .glassEffect(.regular.tint(.orange.opacity(0.15)), in: .rect(cornerRadius: 18))
+    }
+
+    private var sourceChips: some View {
+        ScrollView(.horizontal, showsIndicators: false) {
+            GlassEffectContainer(spacing: 8) {
+                HStack(spacing: 8) {
+                    Chip(title: store.user == nil ? "Deezer verbinden" : "Deezer",
+                         systemImage: store.user == nil ? "plus.circle" : "checkmark.circle.fill",
+                         selected: store.user != nil) {
+                        if store.user == nil { showDeezerLogin = true }
+                    }
+                    Chip(title: store.spotifyUser == nil ? "Spotify verbinden" : "Spotify",
+                         systemImage: store.spotifyUser == nil ? "plus.circle" : "checkmark.circle.fill",
+                         selected: store.spotifyUser != nil) {
+                        if store.spotifyUser == nil { showSpotifyLogin = true }
+                    }
+                    NavigationLink(value: MusicRoute.videoDownloads) {
+                        Label("Videos", systemImage: "film.stack")
+                            .font(.subheadline.weight(.semibold))
+                            .padding(.horizontal, 14)
+                            .padding(.vertical, 8)
+                            .glassEffect(.regular.interactive(), in: .capsule)
+                    }
+                    .buttonStyle(.plain)
+                }
+            }
+        }
+        .scrollClipDisabled()
     }
 
     private var quickTiles: some View {
         LazyVGrid(columns: [GridItem(.flexible(), spacing: 12), GridItem(.flexible(), spacing: 12)], spacing: 12) {
-            NavigationLink(value: MusicRoute.favorites) {
-                QuickTile(title: "Lieblingssongs", subtitle: "\(store.favorites.count) Songs", icon: "heart.fill",
-                          colors: [.pink, .purple])
+            if store.user != nil {
+                NavigationLink(value: MusicRoute.favorites) {
+                    QuickTile(title: "Lieblingssongs", subtitle: "\(store.favorites.count) Songs · Deezer", icon: "heart.fill",
+                              colors: [.pink, .purple])
+                }
+            }
+            if store.spotifyUser != nil {
+                NavigationLink(value: MusicRoute.spotifyLiked) {
+                    QuickTile(title: "Lieblingssongs", subtitle: "Spotify", icon: "heart.fill", colors: [.green, .teal])
+                }
             }
             NavigationLink(value: MusicRoute.downloads) {
                 QuickTile(title: "Downloads", subtitle: downloads.items.isEmpty ? "Offline hören" : "\(downloads.items.count) Songs",
                           icon: "arrow.down.circle.fill", colors: [.teal, .blue])
             }
-            Button { playFlow() } label: {
-                QuickTile(title: "Mix für dich", subtitle: "Flow starten", icon: "sparkles", colors: [.orange, .red])
-            }
-            Button {
-                guard !store.charts.isEmpty else { return }
-                music.play(store.charts, shuffled: true)
-                music.showNowPlaying = true
-            } label: {
-                QuickTile(title: "Charts-Shuffle", subtitle: "Top 50 gemischt", icon: "shuffle", colors: [.indigo, .mint])
+            if store.user != nil {
+                Button { playFlow() } label: {
+                    QuickTile(title: "Mix für dich", subtitle: "Flow starten", icon: "sparkles", colors: [.orange, .red])
+                }
+                Button {
+                    guard !store.charts.isEmpty else { return }
+                    music.play(store.charts, shuffled: true)
+                    music.showNowPlaying = true
+                } label: {
+                    QuickTile(title: "Charts-Shuffle", subtitle: "Top 50 gemischt", icon: "shuffle", colors: [.indigo, .mint])
+                }
             }
         }
         .buttonStyle(.plain)
@@ -229,71 +411,133 @@ struct MusicView: View {
 
     private func search() async {
         let q = query.trimmingCharacters(in: .whitespaces)
-        guard !q.isEmpty, store.user != nil else { results = DZSearchResult(); return }
+        guard !q.isEmpty, store.hasAnySource else {
+            results = DZSearchResult()
+            spResults = SPSearchResult()
+            return
+        }
         try? await Task.sleep(for: .milliseconds(350))
         guard !Task.isCancelled else { return }
         isSearching = true
-        let r = try? await Deezer.shared.search(q)
-        guard !Task.isCancelled else { return }
-        results = r ?? DZSearchResult()
+        if effectiveSource == .spotify {
+            let r = try? await Spotify.shared.search(q)
+            guard !Task.isCancelled else { return }
+            spResults = r ?? SPSearchResult()
+        } else {
+            let r = try? await Deezer.shared.search(q)
+            guard !Task.isCancelled else { return }
+            results = r ?? DZSearchResult()
+        }
         isSearching = false
     }
 
     private var searchResults: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 18) {
-                ScrollView(.horizontal, showsIndicators: false) {
-                    GlassEffectContainer(spacing: 8) {
-                        HStack(spacing: 8) {
-                            ForEach(SearchScope.allCases) { s in
-                                Chip(title: s.title, selected: scope == s) { withAnimation(.snappy) { scope = s } }
-                            }
-                        }
+                if store.user != nil, store.spotifyUser != nil {
+                    Picker("Quelle", selection: $searchSource) {
+                        ForEach(SearchSource.allCases) { Text($0.title).tag($0) }
                     }
+                    .pickerStyle(.segmented)
                 }
-                .scrollClipDisabled()
-
-                if isSearching && results.isEmpty {
-                    ProgressView().frame(maxWidth: .infinity).padding(.top, 40)
-                } else if results.isEmpty {
-                    ContentUnavailableView.search(text: query)
-                }
-
-                if (scope == .all || scope == .artists), !results.artists.isEmpty {
-                    if scope == .all {
-                        shelf("Künstler") { artistTiles }
-                    } else {
-                        LazyVGrid(columns: [GridItem(.adaptive(minimum: 120), spacing: 16)], spacing: 18) { artistTiles }
-                    }
-                }
-                if (scope == .all || scope == .tracks), !results.tracks.isEmpty {
-                    VStack(alignment: .leading, spacing: 4) {
-                        if scope == .all { sectionTitle("Songs", chevron: false).padding(.bottom, 4) }
-                        LazyVStack(spacing: 4) {
-                            ForEach(scope == .all ? Array(results.tracks.prefix(8)) : results.tracks) { t in
-                                TrackRow(track: t, list: results.tracks)
-                            }
-                        }
-                    }
-                }
-                if (scope == .all || scope == .albums), !results.albums.isEmpty {
-                    if scope == .all {
-                        shelf("Alben") { albumTiles }
-                    } else {
-                        LazyVGrid(columns: [GridItem(.adaptive(minimum: 150), spacing: 14)], spacing: 18) { albumTiles }
-                    }
-                }
-                if (scope == .all || scope == .playlists), !results.playlists.isEmpty {
-                    if scope == .all {
-                        shelf("Playlists") { playlistTiles }
-                    } else {
-                        LazyVGrid(columns: [GridItem(.adaptive(minimum: 150), spacing: 14)], spacing: 18) { playlistTiles }
-                    }
+                if effectiveSource == .spotify {
+                    spotifyResults
+                } else {
+                    deezerResults
                 }
             }
             .padding(16)
         }
         .scrollDismissesKeyboard(.immediately)
+    }
+
+    @ViewBuilder private var spotifyResults: some View {
+        if isSearching && spResults.isEmpty {
+            ProgressView().frame(maxWidth: .infinity).padding(.top, 40)
+        } else if spResults.isEmpty {
+            ContentUnavailableView.search(text: query)
+        }
+        if !spResults.tracks.isEmpty {
+            VStack(alignment: .leading, spacing: 4) {
+                sectionTitle("Songs", chevron: false).padding(.bottom, 4)
+                LazyVStack(spacing: 4) {
+                    ForEach(spResults.tracks) { t in TrackRow(track: t, list: spResults.tracks) }
+                }
+            }
+        }
+        if !spResults.albums.isEmpty {
+            shelf("Alben") {
+                ForEach(spResults.albums) { a in
+                    NavigationLink(value: MusicRoute.spotifyAlbum(a.id)) {
+                        CollectionTile(title: a.name, subtitle: [a.artist, a.year].compactMap { $0 }.joined(separator: " · "), image: a.imageURL)
+                    }
+                    .buttonStyle(.plain)
+                    .contextMenu { CollectionMenu(shareURL: a.shareURL, load: { try await Spotify.shared.album(a.id).1 }) }
+                }
+            }
+        }
+        if !spResults.playlists.isEmpty {
+            shelf("Playlists") {
+                ForEach(spResults.playlists) { p in
+                    NavigationLink(value: MusicRoute.spotifyPlaylist(p.id)) {
+                        CollectionTile(title: p.name, subtitle: p.owner, image: p.imageURL)
+                    }
+                    .buttonStyle(.plain)
+                    .contextMenu { CollectionMenu(shareURL: p.shareURL, load: { try await Spotify.shared.playlist(p.id).1 }) }
+                }
+            }
+        }
+    }
+
+    @ViewBuilder private var deezerResults: some View {
+        ScrollView(.horizontal, showsIndicators: false) {
+            GlassEffectContainer(spacing: 8) {
+                HStack(spacing: 8) {
+                    ForEach(SearchScope.allCases) { s in
+                        Chip(title: s.title, selected: scope == s) { withAnimation(.snappy) { scope = s } }
+                    }
+                }
+            }
+        }
+        .scrollClipDisabled()
+
+        if isSearching && results.isEmpty {
+            ProgressView().frame(maxWidth: .infinity).padding(.top, 40)
+        } else if results.isEmpty {
+            ContentUnavailableView.search(text: query)
+        }
+
+        if (scope == .all || scope == .artists), !results.artists.isEmpty {
+            if scope == .all {
+                shelf("Künstler") { artistTiles }
+            } else {
+                LazyVGrid(columns: [GridItem(.adaptive(minimum: 120), spacing: 16)], spacing: 18) { artistTiles }
+            }
+        }
+        if (scope == .all || scope == .tracks), !results.tracks.isEmpty {
+            VStack(alignment: .leading, spacing: 4) {
+                if scope == .all { sectionTitle("Songs", chevron: false).padding(.bottom, 4) }
+                LazyVStack(spacing: 4) {
+                    ForEach(scope == .all ? Array(results.tracks.prefix(8)) : results.tracks) { t in
+                        TrackRow(track: t, list: results.tracks)
+                    }
+                }
+            }
+        }
+        if (scope == .all || scope == .albums), !results.albums.isEmpty {
+            if scope == .all {
+                shelf("Alben") { albumTiles }
+            } else {
+                LazyVGrid(columns: [GridItem(.adaptive(minimum: 150), spacing: 14)], spacing: 18) { albumTiles }
+            }
+        }
+        if (scope == .all || scope == .playlists), !results.playlists.isEmpty {
+            if scope == .all {
+                shelf("Playlists") { playlistTiles }
+            } else {
+                LazyVGrid(columns: [GridItem(.adaptive(minimum: 150), spacing: 14)], spacing: 18) { playlistTiles }
+            }
+        }
     }
 
     @ViewBuilder private var artistTiles: some View {
@@ -362,11 +606,43 @@ struct MusicRouteView: View {
         case .charts: TrackListView(source: .charts)
         case .artist(let id): ArtistView(artistId: id)
         case .downloads: DownloadsView()
+        case .spotifyPlaylist(let id): TrackListView(source: .spotifyPlaylist(id))
+        case .spotifyAlbum(let id): TrackListView(source: .spotifyAlbum(id))
+        case .spotifyLiked: TrackListView(source: .spotifyLiked)
+        case .videoDownloads: DownloadedVideosView()
+        case .dataReset: DataResetView()
         }
     }
 }
 
 // MARK: - Tiles
+
+struct SourceCard: View {
+    let title: String
+    let subtitle: String
+    let icon: String
+    let colors: [Color]
+
+    var body: some View {
+        HStack(spacing: 14) {
+            Image(systemName: icon)
+                .font(.title2.weight(.semibold))
+                .foregroundStyle(.white)
+                .frame(width: 54, height: 54)
+                .background(LinearGradient(colors: colors, startPoint: .topLeading, endPoint: .bottomTrailing),
+                            in: RoundedRectangle(cornerRadius: 15, style: .continuous))
+            VStack(alignment: .leading, spacing: 3) {
+                Text(title).font(.headline)
+                Text(subtitle).font(.subheadline).foregroundStyle(.secondary)
+            }
+            Spacer(minLength: 0)
+            Image(systemName: "chevron.right").font(.footnote.weight(.bold)).foregroundStyle(.tertiary)
+        }
+        .padding(14)
+        .glassEffect(.regular.interactive(), in: .rect(cornerRadius: 24))
+        .contentShape(Rectangle())
+    }
+}
 
 struct QuickTile: View {
     let title: String
@@ -566,11 +842,11 @@ struct TrackMenu: View {
                 Button("Als Nächstes", systemImage: "text.line.first.and.arrowtriangle.forward") { music.playNext(track) }
                 Button("Zur Warteschlange", systemImage: "text.badge.plus") { music.addToQueue(track) }
             }
-            if !track.isYouTube {
+            if track.isDeezer {
                 Button("Mix zu diesem Song", systemImage: "dot.radiowaves.left.and.right") { store.startMix(from: track) }
             }
         }
-        if !track.isYouTube {
+        if track.isDeezer {
             Section {
                 Button(store.isFavorite(track.id) ? "Aus Lieblingssongs entfernen" : "Zu Lieblingssongs",
                        systemImage: store.isFavorite(track.id) ? "heart.slash" : "heart") {
@@ -589,14 +865,18 @@ struct TrackMenu: View {
         }
         Section {
             if downloads.isDownloaded(track.id) {
-                Button("Download löschen", systemImage: "trash", role: .destructive) { downloads.delete(track.id) }
+                Button("Download löschen", systemImage: "trash", role: .destructive) {
+                    ConfirmCenter.shared.ask("„\(track.title)“ löschen?", message: "Die heruntergeladene Datei wird vom Gerät entfernt.") {
+                        downloads.delete(track.id)
+                    }
+                }
             } else if downloads.isQueued(track.id) {
                 Button("Download abbrechen", systemImage: "xmark.circle") { downloads.cancel(track.id) }
             } else if !track.isYouTube {
                 Button("Herunterladen", systemImage: "arrow.down.circle") { downloads.download(track) }
             }
         }
-        if !track.isYouTube {
+        if track.isDeezer {
             Section {
                 if let albumId = track.albumId {
                     Button("Album öffnen", systemImage: "square.stack") { MusicRouter.shared.open(.album(albumId)) }
@@ -609,6 +889,7 @@ struct TrackMenu: View {
         Section {
             if let file = downloads.file(for: track.id) {
                 ShareLink(item: file.url) { Label("Datei teilen", systemImage: "square.and.arrow.up.on.square") }
+                Button("In Dateien sichern", systemImage: "folder") { FileSaver.saveToFiles([file.url]) }
             }
             ShareLink(item: track.shareURL, subject: Text(track.fullTitle), message: Text("\(track.fullTitle) – \(track.artistLine)")) {
                 Label("Link teilen", systemImage: "link")

@@ -13,6 +13,7 @@ struct RootView: View {
     @EnvironmentObject private var musicStore: MusicStore
     @EnvironmentObject private var downloads: DownloadStore
     @ObservedObject private var musicRouter = MusicRouter.shared
+    @ObservedObject private var ytDownloads = YouTubeDownloads.shared
     @ObservedObject private var musicSearch = MusicSearchRequest.shared
     @Environment(\.scenePhase) private var scenePhase
     @State private var tab: AppTab = .home
@@ -37,6 +38,7 @@ struct RootView: View {
         }
         .tabBarMinimizeBehavior(.onScrollDown)
         .youTubeDownloadSheet(active: !player.isPresented)
+        .confirmations(active: !player.isPresented && !music.showNowPlaying && ytDownloads.request == nil)
         .modifier(MiniPlayerAccessory(enabled: (player.current != nil || music.current != nil) && tab != .shorts))
         .sheet(isPresented: $music.showNowPlaying) {
             NowPlayingView()
@@ -113,6 +115,7 @@ struct RootView: View {
                 if tab == .shorts { tab = .music }
             }
             await musicStore.restore()
+            await musicStore.restoreSpotify()
         }
         .tint(settings.accent.color)
     }

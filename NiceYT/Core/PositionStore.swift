@@ -48,6 +48,11 @@ enum PositionStore {
         return min(1, v[0] / v[1])
     }
 
+    static func clear() {
+        all = [:]
+        UserDefaults.standard.removeObject(forKey: key)
+    }
+
     static func remove(_ id: String) {
         var dict = all
         guard dict[id] != nil else { return }

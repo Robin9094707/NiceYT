@@ -39,6 +39,8 @@ final class YouTubeDownloads: ObservableObject {
     @Published private(set) var jobs: [String: Job] = [:]
     /// Video whose download sheet should be shown.
     @Published var request: Video?
+    /// Where finished downloads go additionally ("app", "photos", "files").
+    @AppStorage("ytSaveTarget") var saveTarget = "app"
     /// Shows a short message (set by the root view).
     var onToast: ((String) -> Void)?
 
@@ -105,6 +107,15 @@ final class YouTubeDownloads: ObservableObject {
         videos.removeAll { $0.id == videoId }
         save()
         Haptics.tap()
+    }
+
+    func deleteAll() {
+        tasks.values.forEach { $0.cancel() }
+        tasks = [:]
+        jobs = [:]
+        for item in videos { try? FileManager.default.removeItem(at: item.url) }
+        videos = []
+        save()
     }
 
     private func update(_ id: String, progress: Double? = nil, status: String? = nil) {
@@ -175,6 +186,7 @@ final class YouTubeDownloads: ObservableObject {
                 track.duration = meta.lengthSeconds
                 DownloadStore.shared.addExternal(track, fileName: fileName, size: Self.size(of: out))
                 onToast?("„\(song.title)“ ist jetzt in Musik → Downloads")
+                if saveTarget != "app" { FileSaver.saveToFiles([out]) }
             } else {
                 let thumb = try? await URLSession.shared.data(from: video.maxThumbnail).0
                 let label = option.label
@@ -190,6 +202,11 @@ final class YouTubeDownloads: ObservableObject {
                                               duration: meta.lengthSeconds), at: 0)
                 save()
                 onToast?("„\(title)“ gespeichert")
+                switch saveTarget {
+                case "photos": FileSaver.saveToPhotos(out) { [weak self] text in self?.onToast?(text) }
+                case "files": FileSaver.saveToFiles([out])
+                default: break
+                }
             }
             jobs[id] = nil
             Haptics.success()
@@ -284,6 +301,15 @@ struct YouTubeDownloadSheet: View {
                         } footer: {
                             Text("Als M4A mit quadratischem Cover, Titel und Interpret. Landet in Musik → Downloads und kann in jede App geteilt werden.")
                         }
+                    }
+                    Section {
+                        Picker("Zusätzlich sichern", selection: $downloads.saveTarget) {
+                            Text("Nur in der App").tag("app")
+                            Text("In Fotos (Videos)").tag("photos")
+                            Text("In Dateien").tag("files")
+                        }
+                    } footer: {
+                        Text("Nach dem Download wird die Datei zusätzlich in Fotos oder einen Ordner deiner Wahl in der Dateien-App gesichert. Audio geht bei „Fotos“ in die Dateien-App.")
                     }
                     let videoOptions = options.filter { $0.kind == .video }
                     if !videoOptions.isEmpty {
@@ -408,7 +434,7 @@ struct DownloadedVideosView: View {
                         }
                         .buttonStyle(.plain)
                         .swipeActions(edge: .trailing) {
-                            Button("Löschen", systemImage: "trash", role: .destructive) { downloads.delete(item.id) }
+                            Button("Löschen", systemImage: "trash", role: .destructive) { confirmDelete(item) }
                         }
                         .swipeActions(edge: .leading) {
                             ShareLink(item: item.url) { Label("Teilen", systemImage: "square.and.arrow.up") }.tint(.blue)
@@ -416,7 +442,11 @@ struct DownloadedVideosView: View {
                         .contextMenu {
                             Button("Abspielen", systemImage: "play.fill") { player.play(item.video) }
                             ShareLink(item: item.url) { Label("Datei teilen", systemImage: "square.and.arrow.up") }
-                            Button("Löschen", systemImage: "trash", role: .destructive) { downloads.delete(item.id) }
+                            Button("In Fotos sichern", systemImage: "photo.on.rectangle") {
+                                FileSaver.saveToPhotos(item.url) { player.showToast($0) }
+                            }
+                            Button("In Dateien sichern", systemImage: "folder") { FileSaver.saveToFiles([item.url]) }
+                            Button("Löschen", systemImage: "trash", role: .destructive) { confirmDelete(item) }
                         }
                     }
                 } header: {
@@ -427,6 +457,12 @@ struct DownloadedVideosView: View {
             }
         }
         .navigationTitle("Downloads")
+    }
+
+    private func confirmDelete(_ item: DownloadedVideo) {
+        ConfirmCenter.shared.ask("„\(item.title)“ löschen?", message: "Das Video wird vom Gerät entfernt.") {
+            downloads.delete(item.id)
+        }
     }
 }
 
