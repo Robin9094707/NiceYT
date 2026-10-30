@@ -41,6 +41,7 @@ struct WatchView: View {
             ZStack {
                 GeometryReader { geo in
                     VStack(spacing: 0) {
+                        if !isFull { header }
                         videoArea
                             .frame(width: geo.size.width,
                                    height: isFull ? geo.size.height : min(geo.size.width * 9 / 16, geo.size.height * 0.6))
@@ -60,32 +61,19 @@ struct WatchView: View {
                 // and above the home indicator.
                 .ignoresSafeArea(.container, edges: isFull ? .all : [])
             }
-            .overlay(alignment: .topLeading) {
-                if !isFull {
-                    Button { player.minimize() } label: {
-                        Image(systemName: "chevron.down")
-                            .font(.headline)
-                            .frame(width: 36, height: 36)
+            .overlay(alignment: .top) {
+                // Top centre: the only spot the system player keeps free in fullscreen
+                // (picture-in-picture/AirPlay sit left, volume right).
+                if isFull, player.error == nil, player.current != nil {
+                    Button { player.setFullscreen(false) } label: {
+                        Image(systemName: "arrow.down.right.and.arrow.up.left")
+                            .font(.footnote.weight(.semibold))
+                            .frame(width: 44, height: 30)
                     }
                     .buttonStyle(.glass)
-                    .buttonBorderShape(.circle)
-                    .accessibilityLabel("Player minimieren")
-                    .padding(10)
-                }
-            }
-            .overlay(alignment: .topTrailing) {
-                if player.error == nil, player.current != nil {
-                    Button {
-                        player.setFullscreen(!isFull)
-                    } label: {
-                        Image(systemName: isFull ? "arrow.down.right.and.arrow.up.left" : "arrow.up.left.and.arrow.down.right")
-                            .font(.subheadline.weight(.semibold))
-                            .frame(width: 34, height: 34)
-                    }
-                    .buttonStyle(.glass)
-                    .buttonBorderShape(.circle)
-                    .accessibilityLabel(isFull ? "Vollbild beenden" : "Vollbild")
-                    .padding(isFull ? 14 : 10)
+                    .buttonBorderShape(.capsule)
+                    .accessibilityLabel("Vollbild beenden")
+                    .padding(.top, 12)
                 }
             }
             .background((isFull ? Color.black : Color(.systemBackground)).ignoresSafeArea())
@@ -116,6 +104,57 @@ struct WatchView: View {
     }
 
     // MARK: Video
+
+    /// Bar above the video (portrait): minimise, drag handle, fullscreen – outside the
+    /// system player so nothing overlaps its own buttons.
+    private var header: some View {
+        HStack(spacing: 0) {
+            Button { player.minimize() } label: {
+                Image(systemName: "chevron.down")
+                    .font(.headline)
+                    .frame(width: 34, height: 34)
+            }
+            .buttonStyle(.glass)
+            .buttonBorderShape(.circle)
+            .accessibilityLabel("Player minimieren")
+            Spacer()
+            Capsule()
+                .fill(.secondary.opacity(0.45))
+                .frame(width: 38, height: 5)
+                .accessibilityHidden(true)
+            Spacer()
+            Button {
+                player.setFullscreen(true)
+            } label: {
+                Image(systemName: "arrow.up.left.and.arrow.down.right")
+                    .font(.subheadline.weight(.semibold))
+                    .frame(width: 34, height: 34)
+            }
+            .buttonStyle(.glass)
+            .buttonBorderShape(.circle)
+            .accessibilityLabel("Vollbild")
+            .disabled(player.error != nil || player.current == nil)
+            .opacity(player.error != nil || player.current == nil ? 0.4 : 1)
+        }
+        .padding(.horizontal, 12)
+        .frame(height: 48)
+        .contentShape(.rect)
+        .gesture(
+            DragGesture(minimumDistance: 6)
+                .onChanged { player.live.dragOffset = max(0, $0.translation.height) }
+                .onEnded { value in
+                    if value.translation.height > 110 || value.predictedEndTranslation.height > 280 {
+                        player.minimize()
+                        Task { @MainActor in
+                            try? await Task.sleep(for: .milliseconds(600))
+                            if !player.isPresented { player.live.dragOffset = 0 }
+                        }
+                    } else {
+                        withAnimation(.spring(response: 0.35, dampingFraction: 0.85)) { player.live.dragOffset = 0 }
+                    }
+                }
+        )
+    }
 
     private var videoArea: some View {
         ZStack {

@@ -292,7 +292,7 @@ final class MusicPlayer: ObservableObject {
             if await start(item, at: position, label: "Datei") { return }
         }
         isOffline = false
-        // Spotify songs: same recording on Deezer (ISRC) if connected, else YouTube.
+        // Imported songs: same recording on Deezer (ISRC) if connected, else YouTube.
         var source = track
         if !track.isDeezer {
             if !track.isYouTube, MusicStore.shared.isLoggedIn, let match = await TrackMatcher.shared.deezer(for: track) {
@@ -504,9 +504,6 @@ enum MusicRoute: Hashable {
     case favorites
     case charts
     case downloads
-    case spotifyPlaylist(String)
-    case spotifyAlbum(String)
-    case spotifyLiked
     case videoDownloads
     case dataReset
 }

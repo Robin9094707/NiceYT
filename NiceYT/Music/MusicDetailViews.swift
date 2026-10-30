@@ -4,7 +4,6 @@ import SwiftUI
 struct TrackListView: View {
     enum Source: Hashable {
         case album(String), playlist(String), favorites, charts
-        case spotifyPlaylist(String), spotifyAlbum(String), spotifyLiked
     }
 
     @EnvironmentObject private var music: MusicPlayer
@@ -29,7 +28,7 @@ struct TrackListView: View {
 
     private var isAlbum: Bool {
         switch source {
-        case .album, .spotifyAlbum: return true
+        case .album: return true
         default: return false
         }
     }
@@ -82,8 +81,8 @@ struct TrackListView: View {
     private var header: some View {
         VStack(spacing: 14) {
             Group {
-                if source == .favorites || source == .spotifyLiked {
-                    LinearGradient(colors: source == .favorites ? [.pink, .purple] : [.green, .teal],
+                if source == .favorites {
+                    LinearGradient(colors: [.pink, .purple],
                                    startPoint: .topLeading, endPoint: .bottomTrailing)
                         .overlay { Image(systemName: "heart.fill").font(.system(size: 80)).foregroundStyle(.white) }
                 } else {
@@ -166,24 +165,6 @@ struct TrackListView: View {
                 title = "Lieblingssongs"
                 subtitle = store.user?.name ?? ""
                 tracks = try await Deezer.shared.favoriteTracks()
-            case .spotifyPlaylist(let id):
-                let (playlist, list) = try await Spotify.shared.playlist(id)
-                tracks = list
-                title = playlist?.name ?? "Playlist"
-                subtitle = (playlist?.owner.map { "von \($0) · " } ?? "") + "Spotify"
-                image = playlist?.imageURL ?? list.first?.coverURL()
-                shareURL = playlist?.shareURL
-            case .spotifyAlbum(let id):
-                let (album, list) = try await Spotify.shared.album(id)
-                tracks = list
-                title = album?.name ?? "Album"
-                subtitle = [album?.artist, album?.year].compactMap { $0 }.joined(separator: " · ")
-                image = album?.imageURL
-                shareURL = album?.shareURL
-            case .spotifyLiked:
-                title = "Lieblingssongs"
-                subtitle = "Spotify · \(store.spotifyUser?.name ?? "")"
-                tracks = try await Spotify.shared.likedTracks()
             case .charts:
                 title = "Top-Charts"
                 subtitle = "Die 100 meistgehörten Songs"
@@ -376,7 +357,7 @@ struct DownloadsView: View {
                 } header: {
                     Text("\(downloads.items.count) Songs · \(ByteCountFormatter.string(fromByteCount: downloads.totalSize, countStyle: .file))")
                 } footer: {
-                    Text("Die Dateien (mit Cover und Tags) findest du auch in der Dateien-App unter „Auf meinem iPhone › NicePlay › Musik“. Nach links wischen zum Teilen, nach rechts zum Löschen.")
+                    Text("Die Dateien (mit Cover und Tags) findest du auch in der Dateien-App unter „Auf meinem iPhone › Nova › Musik“. Nach links wischen zum Teilen, nach rechts zum Löschen.")
                 }
             }
         }

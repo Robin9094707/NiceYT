@@ -15,6 +15,7 @@ struct NiceYTApp: App {
 
     init() {
         URLCache.shared = URLCache(memoryCapacity: 96 * 1024 * 1024, diskCapacity: 512 * 1024 * 1024)
+        LegacyCleanup.run()
     }
 
     var body: some Scene {

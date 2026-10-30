@@ -5,6 +5,8 @@ on:
     branches: [main]
     paths:
       - "NiceYT/**"
+      - "ShareExtension/**"
+      - "Support/**"
       - "project.yml"
       - ".github/workflows/build-app.yml"
   workflow_dispatch:
@@ -50,6 +52,7 @@ jobs:
             -destination 'generic/platform=iOS' \
             -derivedDataPath build \
             CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY="" \
+            CURRENT_PROJECT_VERSION=${{ github.run_number }} \
             build 2>&1 | tee build.log | grep -E "error:|warning: .*(deprecated|unavailable)|BUILD (SUCCEEDED|FAILED)" || true
           grep -q "BUILD SUCCEEDED" build.log
 
@@ -62,7 +65,14 @@ jobs:
           APP=build/Build/Products/Release-iphoneos/NiceYT.app
           test -d "$APP"
           # Fake-sign so TrollStore can install it directly; AltStore/Sideloadly re-sign anyway.
-          if command -v ldid >/dev/null; then ldid -S "$APP/NiceYT" || true; fi
+          # The entitlements (passkeys in the browser) only take effect with TrollStore.
+          if command -v ldid >/dev/null; then
+            for EXT in "$APP"/PlugIns/*.appex; do
+              [ -d "$EXT" ] && ldid -S "$EXT/$(basename "$EXT" .appex)" || true
+            done
+            ldid -SSupport/TrollStore.entitlements "$APP/NiceYT" || ldid -S "$APP/NiceYT" || true
+          fi
+          ls "$APP/PlugIns" || true
           mkdir -p Payload
           cp -R "$APP" Payload/
           zip -qry NiceYT.ipa Payload
@@ -79,9 +89,10 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           tag_name: niceyt-${{ github.run_number }}
-          name: NiceYT build ${{ github.run_number }}
+          name: Nova build ${{ github.run_number }}
           body: |
-            Unsignierte IPA von NiceYT (Commit ${{ github.sha }}).
+            Unsignierte IPA von Nova (Commit ${{ github.sha }}).
+            In der App: Einstellungen → Nach Updates suchen installiert neue Builds direkt über AltStore, SideStore oder TrollStore.
             Installation per AltStore, SideStore, Sideloadly oder TrollStore – siehe README.
           files: NiceYT.ipa
           make_latest: true

@@ -133,7 +133,7 @@ final class AppSettings: ObservableObject {
             "haptics": true,
             "musicStreamQuality": DZQuality.mp3_320.rawValue,
             "musicDownloadQuality": DZQuality.flac.rawValue,
-            "accent": AccentChoice.red.rawValue,
+            "accent": AccentChoice.purple.rawValue,
             "audioPreference": AudioPreference.original.rawValue,
             // The app is German, so YouTube content (dates, view counts, comment sorting …)
             // is requested in German as well; it can be changed in the settings.

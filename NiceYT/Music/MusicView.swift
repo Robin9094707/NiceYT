@@ -1,6 +1,6 @@
 import SwiftUI
 
-/// The "Musik" tab: Deezer and/or Spotify, downloads – usable without any account too.
+/// The "Musik" tab: Deezer, YouTube Music and downloads – usable without any account too.
 struct MusicView: View {
     @EnvironmentObject private var store: MusicStore
     @EnvironmentObject private var music: MusicPlayer
@@ -11,15 +11,12 @@ struct MusicView: View {
     @ObservedObject private var request = MusicSearchRequest.shared
     @State private var query = ""
     @State private var results = DZSearchResult()
-    @State private var spResults = SPSearchResult()
     @State private var ytResults: [DZTrack] = []
     @State private var isSearching = false
     @State private var scope: SearchScope = .all
     @State private var searchSource: SearchSource = .deezer
     @State private var confirmLogout = false
-    @State private var confirmSpotifyLogout = false
     @State private var showDeezerLogin = false
-    @State private var showSpotifyLogin = false
 
     enum SearchScope: String, CaseIterable, Identifiable {
         case all, tracks, albums, artists, playlists
@@ -36,12 +33,11 @@ struct MusicView: View {
     }
 
     enum SearchSource: String, CaseIterable, Identifiable {
-        case deezer, spotify, youtubeMusic
+        case deezer, youtubeMusic
         var id: String { rawValue }
         var title: String {
             switch self {
             case .deezer: return "Deezer"
-            case .spotify: return "Spotify"
             case .youtubeMusic: return "YT Music"
             }
         }
@@ -51,7 +47,6 @@ struct MusicView: View {
     private var availableSources: [SearchSource] {
         var out: [SearchSource] = []
         if store.user != nil { out.append(.deezer) }
-        if store.spotifyUser != nil { out.append(.spotify) }
         out.append(.youtubeMusic)
         return out
     }
@@ -85,11 +80,6 @@ struct MusicView: View {
             } message: {
                 Text("Heruntergeladene Songs bleiben auf dem Gerät.")
             }
-            .confirmationDialog("Spotify trennen?", isPresented: $confirmSpotifyLogout, titleVisibility: .visible) {
-                Button("Trennen", role: .destructive) { Task { await store.disconnectSpotify() } }
-            } message: {
-                Text("Heruntergeladene Songs bleiben auf dem Gerät.")
-            }
             .sheet(isPresented: $showDeezerLogin) {
                 NavigationStack {
                     DeezerLoginView()
@@ -103,14 +93,8 @@ struct MusicView: View {
                 }
                 .environmentObject(store)
             }
-            .sheet(isPresented: $showSpotifyLogin) {
-                SpotifyLoginView().environmentObject(store)
-            }
         }
-        .task {
-            await store.restore()
-            await store.restoreSpotify()
-        }
+        .task { await store.restore() }
         .onChange(of: store.user) { _, user in if user != nil { showDeezerLogin = false } }
         .onChange(of: request.token) {
             router.path = NavigationPath()
@@ -145,21 +129,11 @@ struct MusicView: View {
                     Button("Deezer verbinden", systemImage: "plus.circle") { showDeezerLogin = true }
                 }
             }
-            Section("Spotify") {
-                if let u = store.spotifyUser {
-                    Label(u.name + (u.product.map { " · \($0.capitalized)" } ?? ""), systemImage: "checkmark.circle.fill")
-                    Button("Spotify trennen", systemImage: "rectangle.portrait.and.arrow.right", role: .destructive) {
-                        confirmSpotifyLogout = true
-                    }
-                } else {
-                    Button("Spotify verbinden", systemImage: "plus.circle") { showSpotifyLogin = true }
-                }
-            }
             Section {
                 Button("Daten löschen …", systemImage: "trash") { router.path.append(MusicRoute.dataReset) }
             }
         } label: {
-            if let url = store.user?.pictureURL ?? store.spotifyUser?.imageURL {
+            if let url = store.user?.pictureURL {
                 Avatar(url: url, size: 30)
             } else {
                 Image(systemName: "person.crop.circle")
@@ -179,7 +153,7 @@ struct MusicView: View {
                         .frame(width: 104, height: 104)
                         .glassEffect(.regular, in: .circle)
                     Text("Deine Musik").font(.title.weight(.bold))
-                    Text("Verbinde Deezer, Spotify oder beides – oder such einfach oben: YouTube Music funktioniert ganz ohne Konto. Deine Downloads kannst du jederzeit hören.")
+                    Text("Verbinde Deezer – oder such einfach oben: YouTube Music funktioniert ganz ohne Konto. Deine Downloads kannst du jederzeit hören.")
                         .font(.callout)
                         .foregroundStyle(.secondary)
                         .multilineTextAlignment(.center)
@@ -190,10 +164,6 @@ struct MusicView: View {
                     Button { showDeezerLogin = true } label: {
                         SourceCard(title: "Deezer verbinden", subtitle: "Streamen & herunterladen bis FLAC",
                                    icon: "waveform", colors: [.purple, .pink])
-                    }
-                    Button { showSpotifyLogin = true } label: {
-                        SourceCard(title: "Spotify verbinden", subtitle: "Playlists & Lieblingssongs übernehmen",
-                                   icon: "dot.radiowaves.left.and.right", colors: [.green, .mint])
                     }
                 }
                 .buttonStyle(.plain)
@@ -235,22 +205,8 @@ struct MusicView: View {
                 if let problem = store.sessionProblem {
                     banner(problem) { Task { await store.retrySession() } }
                 }
-                if let problem = store.spotifyProblem {
-                    banner("Spotify: " + problem) { Task { await store.loadSpotify(force: true) } }
-                }
                 sourceChips
                 quickTiles
-                if !store.spotifyPlaylists.isEmpty {
-                    shelf("Spotify-Playlists") {
-                        ForEach(store.spotifyPlaylists) { p in
-                            NavigationLink(value: MusicRoute.spotifyPlaylist(p.id)) {
-                                CollectionTile(title: p.name, subtitle: p.trackCount.map { "\($0) Songs" } ?? p.owner, image: p.imageURL)
-                            }
-                            .buttonStyle(.plain)
-                            .contextMenu { CollectionMenu(shareURL: p.shareURL, load: { try await Spotify.shared.playlist(p.id).1 }) }
-                        }
-                    }
-                }
                 if !store.playlists.isEmpty {
                     shelf("Deezer-Playlists") {
                         ForEach(store.playlists) { p in
@@ -310,10 +266,7 @@ struct MusicView: View {
             .padding(16)
             .padding(.bottom, 20)
         }
-        .refreshable {
-            await store.loadHome(force: true)
-            await store.loadSpotify(force: true)
-        }
+        .refreshable { await store.loadHome(force: true) }
     }
 
     private func banner(_ text: String, retry: @escaping () -> Void) -> some View {
@@ -338,11 +291,6 @@ struct MusicView: View {
                          selected: store.user != nil) {
                         if store.user == nil { showDeezerLogin = true }
                     }
-                    Chip(title: store.spotifyUser == nil ? "Spotify verbinden" : "Spotify",
-                         systemImage: store.spotifyUser == nil ? "plus.circle" : "checkmark.circle.fill",
-                         selected: store.spotifyUser != nil) {
-                        if store.spotifyUser == nil { showSpotifyLogin = true }
-                    }
                     NavigationLink(value: MusicRoute.videoDownloads) {
                         Label("Videos", systemImage: "film.stack")
                             .font(.subheadline.weight(.semibold))
@@ -363,11 +311,6 @@ struct MusicView: View {
                 NavigationLink(value: MusicRoute.favorites) {
                     QuickTile(title: "Lieblingssongs", subtitle: "\(store.favorites.count) Songs · Deezer", icon: "heart.fill",
                               colors: [.pink, .purple])
-                }
-            }
-            if store.spotifyUser != nil {
-                NavigationLink(value: MusicRoute.spotifyLiked) {
-                    QuickTile(title: "Lieblingssongs", subtitle: "Spotify", icon: "heart.fill", colors: [.green, .teal])
                 }
             }
             NavigationLink(value: MusicRoute.downloads) {
@@ -426,7 +369,6 @@ struct MusicView: View {
         let q = query.trimmingCharacters(in: .whitespaces)
         guard !q.isEmpty else {
             results = DZSearchResult()
-            spResults = SPSearchResult()
             ytResults = []
             return
         }
@@ -437,10 +379,6 @@ struct MusicView: View {
             let r = try? await YouTubeMusic.searchSongs(q)
             guard !Task.isCancelled else { return }
             ytResults = r ?? []
-        } else if effectiveSource == .spotify {
-            let r = try? await Spotify.shared.search(q)
-            guard !Task.isCancelled else { return }
-            spResults = r ?? SPSearchResult()
         } else {
             let r = try? await Deezer.shared.search(q)
             guard !Task.isCancelled else { return }
@@ -460,7 +398,6 @@ struct MusicView: View {
                 }
                 switch effectiveSource {
                 case .youtubeMusic: youtubeMusicResults
-                case .spotify: spotifyResults
                 case .deezer: deezerResults
                 }
             }
@@ -482,44 +419,6 @@ struct MusicView: View {
                     .padding(.bottom, 4)
                 LazyVStack(spacing: 4) {
                     ForEach(ytResults) { t in TrackRow(track: t, list: ytResults) }
-                }
-            }
-        }
-    }
-
-    @ViewBuilder private var spotifyResults: some View {
-        if isSearching && spResults.isEmpty {
-            ProgressView().frame(maxWidth: .infinity).padding(.top, 40)
-        } else if spResults.isEmpty {
-            ContentUnavailableView.search(text: query)
-        }
-        if !spResults.tracks.isEmpty {
-            VStack(alignment: .leading, spacing: 4) {
-                sectionTitle("Songs", chevron: false).padding(.bottom, 4)
-                LazyVStack(spacing: 4) {
-                    ForEach(spResults.tracks) { t in TrackRow(track: t, list: spResults.tracks) }
-                }
-            }
-        }
-        if !spResults.albums.isEmpty {
-            shelf("Alben") {
-                ForEach(spResults.albums) { a in
-                    NavigationLink(value: MusicRoute.spotifyAlbum(a.id)) {
-                        CollectionTile(title: a.name, subtitle: [a.artist, a.year].compactMap { $0 }.joined(separator: " · "), image: a.imageURL)
-                    }
-                    .buttonStyle(.plain)
-                    .contextMenu { CollectionMenu(shareURL: a.shareURL, load: { try await Spotify.shared.album(a.id).1 }) }
-                }
-            }
-        }
-        if !spResults.playlists.isEmpty {
-            shelf("Playlists") {
-                ForEach(spResults.playlists) { p in
-                    NavigationLink(value: MusicRoute.spotifyPlaylist(p.id)) {
-                        CollectionTile(title: p.name, subtitle: p.owner, image: p.imageURL)
-                    }
-                    .buttonStyle(.plain)
-                    .contextMenu { CollectionMenu(shareURL: p.shareURL, load: { try await Spotify.shared.playlist(p.id).1 }) }
                 }
             }
         }
@@ -642,9 +541,6 @@ struct MusicRouteView: View {
         case .charts: TrackListView(source: .charts)
         case .artist(let id): ArtistView(artistId: id)
         case .downloads: DownloadsView()
-        case .spotifyPlaylist(let id): TrackListView(source: .spotifyPlaylist(id))
-        case .spotifyAlbum(let id): TrackListView(source: .spotifyAlbum(id))
-        case .spotifyLiked: TrackListView(source: .spotifyLiked)
         case .videoDownloads: DownloadedVideosView()
         case .dataReset: DataResetView()
         }

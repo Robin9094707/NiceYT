@@ -6,3 +6,5 @@ DerivedData/
 xcuserdata/
 *.ipa
 Payload/
+NiceYT/Info.plist
+ShareExtension/Info.plist

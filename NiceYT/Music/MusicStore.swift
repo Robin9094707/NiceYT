@@ -18,14 +18,8 @@ final class MusicStore: ObservableObject {
     @Published private(set) var homeError: String?
     /// Bumped whenever the favourites change (the favourites list reloads).
     @Published private(set) var favoritesVersion = 0
-    // Spotify
-    @Published private(set) var spotifyUser: SPUser? = Spotify.cachedUser
-    @Published private(set) var spotifyPlaylists: [SPPlaylist] = []
-    @Published private(set) var spotifyProblem: String?
-    private var spotifyLoaded = false
 
-    var isSpotifyConnected: Bool { spotifyUser != nil }
-    var hasAnySource: Bool { user != nil || spotifyUser != nil }
+    var hasAnySource: Bool { user != nil }
 
     private var homeLoaded = false
     private var verified = false
@@ -105,47 +99,6 @@ final class MusicStore: ObservableObject {
         if charts.isEmpty, playlists.isEmpty { homeError = "Deezer ist gerade nicht erreichbar." } else { sessionProblem = nil }
         homeLoaded = true
         isLoadingHome = false
-    }
-
-    // MARK: Spotify
-
-    func restoreSpotify() async {
-        guard Spotify.mode != nil, !spotifyLoaded else { return }
-        if let u = await Spotify.shared.restore() {
-            spotifyUser = u
-            spotifyProblem = nil
-            await loadSpotify()
-        } else if spotifyUser != nil {
-            spotifyProblem = "Spotify-Sitzung konnte nicht erneuert werden."
-        }
-    }
-
-    func connectSpotify(_ user: SPUser) async {
-        spotifyUser = user
-        spotifyProblem = nil
-        Haptics.success()
-        spotifyLoaded = false
-        await loadSpotify()
-    }
-
-    func loadSpotify(force: Bool = false) async {
-        guard spotifyUser != nil, force || !spotifyLoaded else { return }
-        do {
-            spotifyPlaylists = try await Spotify.shared.playlists()
-            spotifyLoaded = true
-            spotifyProblem = nil
-        } catch {
-            spotifyProblem = error.localizedDescription
-        }
-    }
-
-    func disconnectSpotify() async {
-        await Spotify.shared.logout()
-        await SpotifyWebSession.clear()
-        spotifyUser = nil
-        spotifyPlaylists = []
-        spotifyLoaded = false
-        spotifyProblem = nil
     }
 
     func isFavorite(_ id: String) -> Bool { favorites.contains(id) }

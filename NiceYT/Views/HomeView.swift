@@ -76,7 +76,7 @@ struct HomeView: View {
                 }
             }
             .id("\(topic.rawValue)-\(loaders.generation)")
-            .navigationTitle("NicePlay")
+            .navigationTitle(AppInfo.name)
             .toolbar {
                 ToolbarItem(placement: .topBarLeading) {
                     Image(systemName: "play.rectangle.fill")
@@ -89,8 +89,8 @@ struct HomeView: View {
                         .accessibilityLabel("Einstellungen")
                 }
                 ToolbarItem(placement: .topBarTrailing) {
-                    Button { BrowserModel.shared.open(nil) } label: { Image(systemName: "arrow.down.app") }
-                        .accessibilityLabel("Downloader & Browser")
+                    Button { BrowserModel.shared.open(nil) } label: { Image(systemName: "safari") }
+                        .accessibilityLabel("Browser & Download-Assistent")
                 }
                 ToolbarItem(placement: .topBarTrailing) { LibraryButton() }
             }

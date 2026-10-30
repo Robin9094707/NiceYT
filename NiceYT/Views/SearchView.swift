@@ -106,7 +106,7 @@ struct SearchView: View {
             player.play(Video(id: id, title: ""))
             return
         }
-        // Any other link: Deezer/Spotify into music, everything else into the downloader.
+        // Any other link: Deezer into music, everything else into the browser/downloader.
         if let url = BrowserModel.url(from: q), q.contains("/") || q.hasPrefix("http") {
             LinkRouter.shared.open(url)
             return

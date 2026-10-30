@@ -77,7 +77,7 @@ struct MiniPlayerView: View {
         } else {
             HStack {
                 Image(systemName: "play.rectangle.fill").foregroundStyle(.tint)
-                Text("NicePlay").font(.footnote.weight(.semibold))
+                Text(AppInfo.name).font(.footnote.weight(.semibold))
                 Spacer()
             }
             .padding(.horizontal, 14)

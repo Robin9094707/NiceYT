@@ -19,15 +19,10 @@ enum DataReset {
         if includeDownloads { DownloadStore.shared.delete { $0.track.isDeezer } }
     }
 
-    static func spotify(includeDownloads: Bool) async {
-        await MusicStore.shared.disconnectSpotify()
-        Spotify.clientId = nil
-        if includeDownloads { DownloadStore.shared.delete { $0.track.isSpotify } }
-    }
-
     static func browser(includeDownloads: Bool) async {
         await BrowserModel.dataStore.removeData(ofTypes: WKWebsiteDataStore.allWebsiteDataTypes(), modifiedSince: .distantPast)
-        BrowserModel.shared.showStartPage()
+        BrowserModel.shared.closeAllTabs()
+        BrowserLibrary.shared.clearHistory()
         if includeDownloads { FileDownloads.shared.deleteAll() }
     }
 
@@ -35,11 +30,11 @@ enum DataReset {
         await youTube(account: account)
         await browser(includeDownloads: true)
         await deezer(includeDownloads: true)
-        await spotify(includeDownloads: true)
         MusicPlayer.shared.stop()
         DownloadStore.shared.deleteAll()
         YouTubeDownloads.shared.deleteAll()
-        for key in ["cookies", "deezerARL", "spotifyRefreshToken"] { Keychain.remove(key) }
+        BrowserLibrary.shared.clearAll()
+        for key in ["cookies", "deezerARL"] { Keychain.remove(key) }
         let fm = FileManager.default
         let docs = fm.urls(for: .documentDirectory, in: .userDomainMask)[0]
         for url in (try? fm.contentsOfDirectory(at: docs, includingPropertiesForKeys: nil)) ?? [] { try? fm.removeItem(at: url) }
@@ -55,14 +50,13 @@ struct DataResetView: View {
     @EnvironmentObject private var downloads: DownloadStore
     @EnvironmentObject private var ytDownloads: YouTubeDownloads
     @State private var deezerDownloads = false
-    @State private var spotifyDownloads = false
     @State private var browserDownloads = false
     @State private var pending: Target?
     @State private var working = false
     @State private var done: String?
 
     enum Target: Identifiable {
-        case youTube, deezer, spotify, browser, everything
+        case youTube, deezer, browser, everything
         var id: Self { self }
     }
 
@@ -87,22 +81,12 @@ struct DataResetView: View {
             }
 
             Section {
-                Toggle("Auch Spotify-Downloads löschen", isOn: $spotifyDownloads)
-                resetButton(store.spotifyUser == nil ? "Spotify-Daten löschen" : "Spotify trennen & Daten löschen",
-                            icon: "dot.radiowaves.left.and.right", target: .spotify)
-            } header: {
-                Text("Spotify")
-            } footer: {
-                Text("Löscht die Spotify-Anmeldung (auch die Client-ID). \(downloads.items.filter { $0.track.isSpotify }.count) Songs stammen aus Spotify.")
-            }
-
-            Section {
                 Toggle("Auch Datei-Downloads löschen", isOn: $browserDownloads)
                 resetButton("Browser-Daten löschen", icon: "safari", target: .browser)
             } header: {
                 Text("Browser & Downloader")
             } footer: {
-                Text("Löscht Cookies, Anmeldungen und Verlauf des In-App-Browsers.")
+                Text("Löscht Cookies, Anmeldungen, Tabs und Verlauf des Browsers. Lesezeichen bleiben erhalten.")
             }
 
             Section {
@@ -140,7 +124,6 @@ struct DataResetView: View {
         switch target {
         case .youTube: return "Alle YouTube-Daten löschen?"
         case .deezer: return deezerDownloads ? "Deezer-Daten und -Downloads löschen?" : "Deezer-Daten löschen?"
-        case .spotify: return spotifyDownloads ? "Spotify-Daten und -Downloads löschen?" : "Spotify-Daten löschen?"
         case .browser: return browserDownloads ? "Browser-Daten und Datei-Downloads löschen?" : "Browser-Daten löschen?"
         case .everything: return "Wirklich alles löschen?"
         case nil: return ""
@@ -153,7 +136,6 @@ struct DataResetView: View {
             switch target {
             case .youTube: await DataReset.youTube(account: account)
             case .deezer: await DataReset.deezer(includeDownloads: deezerDownloads)
-            case .spotify: await DataReset.spotify(includeDownloads: spotifyDownloads)
             case .browser: await DataReset.browser(includeDownloads: browserDownloads)
             case .everything: await DataReset.everything(account: account)
             }

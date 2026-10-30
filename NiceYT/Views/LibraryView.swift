@@ -29,8 +29,8 @@ struct LibraryView: View {
                     VStack(spacing: 12) {
                         Button { BrowserModel.shared.open(nil) } label: {
                             HStack(spacing: 14) {
-                                Image(systemName: "arrow.down.app.fill").font(.title3).foregroundStyle(.tint).frame(width: 32)
-                                Text("Downloader & Browser").font(.body.weight(.medium))
+                                Image(systemName: "safari.fill").font(.title3).foregroundStyle(.tint).frame(width: 32)
+                                Text("Browser & Download-Assistent").font(.body.weight(.medium))
                                 Spacer()
                                 Image(systemName: "chevron.right").font(.caption.weight(.bold)).foregroundStyle(.tertiary)
                             }
@@ -39,7 +39,7 @@ struct LibraryView: View {
                         }
                         .buttonStyle(.plain)
                         LibraryRow(title: "Video-Downloads", icon: "arrow.down.circle.fill", route: .downloads)
-                        LibraryRow(title: "Datei-Downloads", icon: "tray.and.arrow.down.fill", route: .fileDownloads)
+                        LibraryRow(title: "Mediathek", icon: "square.stack.fill", route: .fileDownloads)
                     }
                 }
                 featureCard
@@ -107,7 +107,7 @@ struct LibraryView: View {
 
     private var featureCard: some View {
         VStack(alignment: .leading, spacing: 10) {
-            Label("NicePlay Premium-Features", systemImage: "sparkles").font(.headline)
+            Label("\(AppInfo.name) Premium-Features", systemImage: "sparkles").font(.headline)
             Group {
                 Label("Komplett werbefrei", systemImage: "nosign")
                 Label("Immer Originalton statt KI-Übersetzung", systemImage: "waveform")
@@ -116,6 +116,8 @@ struct LibraryView: View {
                 Label("SponsorBlock überspringt Sponsoren", systemImage: "forward.end.alt")
                 Label("Dislikes wieder sichtbar", systemImage: "hand.thumbsdown")
                 Label("Bis zu 4K über natives HLS", systemImage: "4k.tv")
+                Label("Browser mit Tabs, Werbeblocker & Face ID", systemImage: "safari")
+                Label("TikTok, Instagram, Facebook & X ohne Wasserzeichen laden", systemImage: "arrow.down.circle")
             }
             .font(.subheadline)
             .foregroundStyle(.secondary)

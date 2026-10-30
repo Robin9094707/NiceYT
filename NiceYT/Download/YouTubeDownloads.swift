@@ -318,7 +318,7 @@ struct YouTubeDownloadSheet: View {
                         } header: {
                             Text("Video")
                         } footer: {
-                            Text("Als MP4 mit Originalton. Gespeicherte Videos spielen ohne Internet und liegen in der Dateien-App unter NicePlay › Videos.")
+                            Text("Als MP4 mit Originalton. Gespeicherte Videos spielen ohne Internet und liegen in der Dateien-App unter Nova › Videos.")
                         }
                     }
                 }

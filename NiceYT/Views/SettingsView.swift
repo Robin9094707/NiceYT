@@ -8,6 +8,7 @@ struct SettingsView: View {
     @State private var showCookies = false
     @State private var confirmSignOut = false
     @State private var cacheCleared = false
+    @ObservedObject private var updates = UpdateChecker.shared
 
     /// The list plus the stored value, should it be one that isn't offered.
     private func options(_ list: [AppSettings.Option], current: String) -> [AppSettings.Option] {
@@ -130,6 +131,23 @@ struct SettingsView: View {
 
                 Section {
                     NavigationLink {
+                        BrowserSettingsView()
+                    } label: {
+                        Label("Browser & Downloads", systemImage: "safari")
+                    }
+                    NavigationLink {
+                        MediaLibraryView()
+                    } label: {
+                        Label("Mediathek", systemImage: "square.stack.fill")
+                    }
+                } header: {
+                    Text("Browser")
+                } footer: {
+                    Text("Suchmaschine, Werbeblocker, Face-ID-Sperre, Download-Ziel (Mediathek, Fotos, Dateien).")
+                }
+
+                Section {
+                    NavigationLink {
                         DiagnosticsView()
                     } label: {
                         Label("Diagnose & Protokoll", systemImage: "stethoscope")
@@ -150,7 +168,7 @@ struct SettingsView: View {
                 } header: {
                     Text("Konten & Daten")
                 } footer: {
-                    Text("YouTube, Deezer oder Spotify einzeln zurücksetzen – oder alles löschen und neu anfangen.")
+                    Text("YouTube, Deezer oder den Browser einzeln zurücksetzen – oder alles löschen und neu anfangen.")
                 }
 
                 Section("Speicher") {
@@ -164,12 +182,28 @@ struct SettingsView: View {
                 }
 
                 Section {
-                    LabeledContent("Version", value: Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "1.0")
+                    LabeledContent("Version", value: "\(AppInfo.version) (\(AppInfo.build))")
+                    if let latest = updates.latest, updates.updateAvailable {
+                        Button {
+                            updates.prompt = latest
+                        } label: {
+                            Label("Update auf Build \(latest.build) installieren", systemImage: "arrow.down.app.fill")
+                        }
+                    } else {
+                        Button {
+                            Task { await updates.check(force: true) }
+                        } label: {
+                            HStack {
+                                Label(updates.latest == nil ? "Nach Updates suchen" : "Aktuell – erneut prüfen", systemImage: "arrow.triangle.2.circlepath")
+                                if updates.isChecking { Spacer(); ProgressView() }
+                            }
+                        }
+                    }
                     Link(destination: URL(string: "https://github.com/Robin9094707/NiceYT")!) {
                         Label("Quellcode auf GitHub", systemImage: "chevron.left.forwardslash.chevron.right")
                     }
                 } footer: {
-                    Text("NicePlay ist ein inoffizieller Client und steht in keiner Verbindung zu Google, YouTube oder Deezer.")
+                    Text("\(AppInfo.name) ist ein inoffizieller Client und steht in keiner Verbindung zu Google, YouTube, Deezer, TikTok, Meta oder X.\(updates.lastError.map { "\nUpdate-Prüfung: " + $0 } ?? "")")
                 }
             }
             .navigationTitle("Einstellungen")

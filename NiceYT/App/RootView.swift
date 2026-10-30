@@ -17,6 +17,7 @@ struct RootView: View {
     @ObservedObject private var browser = BrowserModel.shared
     @ObservedObject private var links = LinkRouter.shared
     @ObservedObject private var musicSearch = MusicSearchRequest.shared
+    @ObservedObject private var updates = UpdateChecker.shared
     @Environment(\.scenePhase) private var scenePhase
     @State private var tab: AppTab = .home
 
@@ -40,11 +41,13 @@ struct RootView: View {
         }
         .tabBarMinimizeBehavior(.onScrollDown)
         .youTubeDownloadSheet(active: !player.isPresented && !browser.isPresented)
+        .downloadAssistantSheet(active: !player.isPresented && !browser.isPresented && ytDownloads.request == nil)
         .confirmations(active: !player.isPresented && !music.showNowPlaying && ytDownloads.request == nil && !browser.isPresented)
         .background {
             Color.clear.fullScreenCover(isPresented: $browser.isPresented) {
                 BrowserScreen()
                     .environmentObject(FileDownloads.shared)
+                    .environmentObject(music)
                     .environmentObject(YouTubeDownloads.shared)
                     .environmentObject(player)
                     .environmentObject(settings)
@@ -112,7 +115,14 @@ struct RootView: View {
             if phase == .active {
                 updateShorts()
                 LinkRouter.shared.checkClipboard()
+                Task { await UpdateChecker.shared.check() }
+            } else if phase == .background {
+                AppLock.shared.lock()
             }
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .novaMediaWillPlay)) { _ in
+            player.player.pause()
+            music.pause()
         }
         .onOpenURL { url in LinkRouter.shared.handle(scheme: url) }
         .onChange(of: links.playRequest) { _, video in
@@ -130,12 +140,17 @@ struct RootView: View {
                     Image(systemName: "link.badge.plus").font(.title3).foregroundStyle(.tint)
                     VStack(alignment: .leading, spacing: 1) {
                         Text("Link in der Zwischenablage").font(.subheadline.weight(.semibold))
-                        Text("In NicePlay öffnen oder herunterladen").font(.caption).foregroundStyle(.secondary)
+                        Text("Herunterladen oder in Nova öffnen").font(.caption).foregroundStyle(.secondary)
                     }
                     Spacer(minLength: 4)
-                    Button("Öffnen") { links.openClipboard() }
-                        .buttonStyle(.glassProminent)
-                        .font(.subheadline.weight(.semibold))
+                    Button { links.openClipboard() } label: { Image(systemName: "safari").font(.subheadline.weight(.semibold)) }
+                        .buttonStyle(.glass)
+                        .buttonBorderShape(.circle)
+                        .accessibilityLabel("Öffnen")
+                    Button { links.downloadClipboard() } label: {
+                        Label("Laden", systemImage: "arrow.down").font(.subheadline.weight(.semibold))
+                    }
+                    .buttonStyle(.glassProminent)
                     Button { links.dismissClipboard() } label: { Image(systemName: "xmark").font(.caption.weight(.bold)) }
                         .buttonStyle(.plain)
                         .foregroundStyle(.secondary)
@@ -146,6 +161,9 @@ struct RootView: View {
                 .padding(.bottom, 120)
                 .transition(.move(edge: .bottom).combined(with: .opacity))
             }
+        }
+        .sheet(item: Binding(get: { updates.prompt }, set: { updates.prompt = $0 })) { release in
+            UpdateSheet(release: release)
         }
         .task {
             // Prepare the signature/n solver in the background so the first video starts fast.
@@ -159,7 +177,7 @@ struct RootView: View {
                 if tab == .shorts { tab = .music }
             }
             await musicStore.restore()
-            await musicStore.restoreSpotify()
+            await UpdateChecker.shared.check()
         }
         .tint(settings.accent.color)
     }

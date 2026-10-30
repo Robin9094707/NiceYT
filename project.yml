@@ -8,8 +8,9 @@ options:
 settings:
   base:
     SWIFT_VERSION: "5.0"
-    MARKETING_VERSION: "1.6.0"
-    CURRENT_PROJECT_VERSION: "7"
+    MARKETING_VERSION: "2.0.0"
+    # CI passes the GitHub run number, which the in-app updater compares with the release tags.
+    CURRENT_PROJECT_VERSION: "8"
     DEVELOPMENT_TEAM: ""
 targets:
   NiceYT:
@@ -25,7 +26,7 @@ targets:
     info:
       path: NiceYT/Info.plist
       properties:
-        CFBundleDisplayName: NicePlay
+        CFBundleDisplayName: Nova
         CFBundleDevelopmentRegion: de
         CFBundleLocalizations: [de]
         CFBundleAllowMixedLocalizations: false
@@ -50,10 +51,17 @@ targets:
         ITSAppUsesNonExemptEncryption: false
         UIFileSharingEnabled: true
         LSSupportsOpeningDocumentsInPlace: true
-        NSPhotoLibraryAddUsageDescription: "NicePlay sichert heruntergeladene Videos auf Wunsch in deiner Fotomediathek."
+        NSPhotoLibraryAddUsageDescription: "Nova sichert heruntergeladene Videos und Bilder auf Wunsch in deiner Fotomediathek."
+        NSFaceIDUsageDescription: "Nova schützt Browser und Mediathek auf Wunsch mit Face ID."
+        NSCameraUsageDescription: "Websites im Browser können nach deiner Erlaubnis die Kamera nutzen."
+        NSMicrophoneUsageDescription: "Websites im Browser können nach deiner Erlaubnis das Mikrofon nutzen."
+        NSLocationWhenInUseUsageDescription: "Websites im Browser können nach deiner Erlaubnis deinen Standort abfragen."
+        LSApplicationQueriesSchemes: [altstore, sidestore, apple-magnifier]
         CFBundleURLTypes:
           - CFBundleURLName: com.robin.niceyt
-            CFBundleURLSchemes: [niceyt, youtube, vnd.youtube]
+            CFBundleURLSchemes: [nova, niceyt, youtube, vnd.youtube]
+    dependencies:
+      - target: NovaShare
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.robin.niceyt
@@ -67,6 +75,42 @@ targets:
         CODE_SIGNING_REQUIRED: NO
         CODE_SIGN_IDENTITY: ""
         ENABLE_BITCODE: NO
+        SWIFT_OPTIMIZATION_LEVEL: -O
+        SWIFT_STRICT_CONCURRENCY: minimal
+  NovaShare:
+    type: app-extension
+    platform: iOS
+    sources:
+      - path: ShareExtension
+        excludes:
+          - "Info.plist"
+    info:
+      path: ShareExtension/Info.plist
+      properties:
+        CFBundleDisplayName: Nova
+        CFBundleDevelopmentRegion: de
+        CFBundleShortVersionString: $(MARKETING_VERSION)
+        CFBundleVersion: $(CURRENT_PROJECT_VERSION)
+        NSExtension:
+          NSExtensionPointIdentifier: com.apple.share-services
+          NSExtensionPrincipalClass: $(PRODUCT_MODULE_NAME).ShareViewController
+          NSExtensionAttributes:
+            NSExtensionActivationRule:
+              NSExtensionActivationSupportsWebURLWithMaxCount: 1
+              NSExtensionActivationSupportsWebPageWithMaxCount: 1
+              NSExtensionActivationSupportsText: true
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.robin.niceyt.share
+        PRODUCT_NAME: NovaShare
+        TARGETED_DEVICE_FAMILY: "1,2"
+        GENERATE_INFOPLIST_FILE: NO
+        # Opening the app from the share sheet goes through UIApplication (responder chain).
+        APPLICATION_EXTENSION_API_ONLY: NO
+        CODE_SIGN_STYLE: Manual
+        CODE_SIGNING_ALLOWED: NO
+        CODE_SIGNING_REQUIRED: NO
+        CODE_SIGN_IDENTITY: ""
         SWIFT_OPTIMIZATION_LEVEL: -O
         SWIFT_STRICT_CONCURRENCY: minimal
 schemes:

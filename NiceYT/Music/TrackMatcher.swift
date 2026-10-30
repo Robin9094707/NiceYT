@@ -1,8 +1,7 @@
 import Foundation
 
-/// Finds a playable source for songs that don't come from Deezer (Spotify library,
-/// YouTube audio): the same recording on Deezer by ISRC, else the best YouTube upload –
-/// the approach spotDL uses, without touching Spotify's DRM.
+/// Finds a playable source for songs that don't come from Deezer (YouTube audio, songs
+/// imported by older versions): the same recording on Deezer by ISRC, else the best YouTube upload.
 actor TrackMatcher {
     static let shared = TrackMatcher()
 

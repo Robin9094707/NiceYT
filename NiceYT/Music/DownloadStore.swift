@@ -110,7 +110,7 @@ final class DownloadStore: ObservableObject {
     private func run(_ track: DZTrack) async {
         defer { if progress[track.id] == nil { active[track.id] = nil } }
         do {
-            // Spotify songs come from Deezer (same recording by ISRC) or from YouTube.
+            // Imported songs come from Deezer (same recording by ISRC) or from YouTube.
             var source = track
             if !track.isDeezer {
                 if !track.isYouTube, MusicStore.shared.isLoggedIn, let match = await TrackMatcher.shared.deezer(for: track) {
@@ -261,7 +261,7 @@ final class DownloadStore: ObservableObject {
         Haptics.tap()
     }
 
-    /// Removes the downloads matching `filter` (e.g. only Deezer or only Spotify songs).
+    /// Removes the downloads matching `filter` (e.g. only Deezer songs).
     func delete(where filter: (DownloadedTrack) -> Bool) {
         for item in items where filter(item) { try? FileManager.default.removeItem(at: item.url) }
         items.removeAll(where: filter)

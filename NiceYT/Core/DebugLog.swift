@@ -41,7 +41,7 @@ final class DebugLog: @unchecked Sendable {
     func export() -> String {
         let info = Bundle.main.infoDictionary ?? [:]
         let header = [
-            "NicePlay \(info["CFBundleShortVersionString"] as? String ?? "?") (\(info["CFBundleVersion"] as? String ?? "?"))",
+            "\(AppInfo.name) \(info["CFBundleShortVersionString"] as? String ?? "?") (\(info["CFBundleVersion"] as? String ?? "?"))",
             "\(UIDevice.current.model) iOS \(UIDevice.current.systemVersion)",
             "Angemeldet: \(CookieJar.shared.isSignedIn ? "ja" : "nein") · hl=\(AppSettings.hl) gl=\(AppSettings.gl)",
             "Visitor: \(InnerTube.shared.visitorData == nil ? "nein" : "ja")",

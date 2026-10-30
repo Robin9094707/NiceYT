@@ -81,29 +81,11 @@ struct DZTrack: Identifiable, Hashable, Codable, Sendable {
     }
 
     var isYouTube: Bool { id.hasPrefix("yt-") }
-    var isSpotify: Bool { id.hasPrefix("sp-") }
+    /// Songs imported from other services by older versions ("sp-…"); played through Deezer or YouTube.
+    var isImported: Bool { id.hasPrefix("sp-") }
     /// A real Deezer song (favourites, lyrics, albums … work).
-    var isDeezer: Bool { !isYouTube && !isSpotify }
+    var isDeezer: Bool { !isYouTube && !isImported }
     var youtubeId: String? { isYouTube ? String(id.dropFirst(3)) : nil }
-
-    /// Song from a Spotify library; played and downloaded through Deezer (ISRC) or YouTube.
-    init?(spotify j: JSON) {
-        guard let sid = j["id"].string, j["type"].string ?? "track" == "track" else { return nil }
-        id = "sp-" + sid
-        title = j["name"].string ?? ""
-        artists = j["artists"].array.compactMap { $0["name"].string }
-        artist = artists.first ?? ""
-        artistId = nil
-        album = j.at("album.name").string ?? ""
-        duration = (j["duration_ms"].int ?? 0) / 1000
-        trackNumber = j["track_number"].int
-        discNumber = j["disc_number"].int
-        isrc = j.at("external_ids.isrc").string
-        releaseDate = j.at("album.release_date").string
-        explicit = j["explicit"].bool ?? false
-        artworkURL = j.at("album.images.0.url").string.flatMap(URL.init(string:))
-        sourceURL = URL(string: "https://open.spotify.com/track/\(sid)")
-    }
 
     init?(gw j: JSON) {
         guard let id = j["SNG_ID"].string, id != "0", Int(id) ?? 0 > 0 else { return nil }

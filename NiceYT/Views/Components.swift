@@ -29,7 +29,7 @@ struct RouteDestination: View {
         case .subscriptionsList: SubscribedChannelsView()
         case .library: LibraryView()
         case .downloads: DownloadedVideosView()
-        case .fileDownloads: FileDownloadsView()
+        case .fileDownloads: MediaLibraryView()
         }
     }
 }
