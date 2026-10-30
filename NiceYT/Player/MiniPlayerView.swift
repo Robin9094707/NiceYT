@@ -3,10 +3,13 @@ import SwiftUI
 /// Lives in the tab bar's bottom accessory (the iOS 26 Liquid Glass "now playing" slot).
 struct MiniPlayerView: View {
     @EnvironmentObject private var player: PlayerModel
+    @EnvironmentObject private var music: MusicPlayer
     @Environment(\.tabViewBottomAccessoryPlacement) private var placement
 
     var body: some View {
-        if let video = player.current {
+        if music.current != nil, music.isFocused || player.current == nil {
+            MusicMiniPlayer()
+        } else if let video = player.current {
             HStack(spacing: 10) {
                 ZStack {
                     RemoteImage(url: video.bestThumbnail)
@@ -64,11 +67,17 @@ struct MiniPlayerView: View {
             }
             .contentShape(Rectangle())
             .onTapGesture { player.presentPlayer() }
+            .contextMenu {
+                Button("Player öffnen", systemImage: "arrow.up.left.and.arrow.down.right") { player.presentPlayer() }
+                Button("Nächstes Video", systemImage: "forward.fill") { player.playNext() }
+                ShareLink(item: video.shareURL) { Label("Teilen", systemImage: "square.and.arrow.up") }
+                Button("Schließen", systemImage: "xmark", role: .destructive) { withAnimation { player.close() } }
+            }
             .accessibilityAction(named: "Player öffnen") { player.presentPlayer() }
         } else {
             HStack {
                 Image(systemName: "play.rectangle.fill").foregroundStyle(.tint)
-                Text("NiceYT").font(.footnote.weight(.semibold))
+                Text("NicePlay").font(.footnote.weight(.semibold))
                 Spacer()
             }
             .padding(.horizontal, 14)

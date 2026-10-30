@@ -29,6 +29,7 @@ struct SubscriptionsView: View {
                         }
                     }
                 }
+                ToolbarItem(placement: .topBarTrailing) { LibraryButton() }
             }
             .withRoutes()
         }

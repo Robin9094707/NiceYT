@@ -152,6 +152,7 @@ final class ShortsModel: ObservableObject {
 
     func togglePause() {
         guard let id = currentID, let p = players[id] else { return }
+        Haptics.tap()
         if p.timeControlStatus == .playing || p.rate > 0 {
             p.pause()
             paused = true
@@ -207,6 +208,7 @@ final class ShortsModel: ObservableObject {
         let player = AVPlayer()
         player.audiovisualBackgroundPlaybackPolicy = .pauses
         player.preventsDisplaySleepDuringVideoPlayback = true
+        player.appliesMediaSelectionCriteriaAutomatically = false
         players[id] = player
         states[id] = .loading
         loopObservers[id] = NotificationCenter.default.publisher(for: AVPlayerItem.didPlayToEndTimeNotification)
@@ -307,11 +309,13 @@ final class ShortsModel: ObservableObject {
         let old = isLiked(id)
         guard old != liked else { return }
         likes[id] = liked
+        if liked { Haptics.like() } else { Haptics.tap() }
         Task {
             do {
                 try await YouTube.setLike(id, status: liked ? "LIKE" : "INDIFFERENT")
             } catch {
                 likes[id] = old
+                Haptics.error()
                 toast(error.localizedDescription)
             }
         }
@@ -325,6 +329,7 @@ final class ShortsModel: ObservableObject {
         guard CookieJar.shared.isSignedIn else { toast("Zum Abonnieren bitte anmelden"); return }
         let new = !isSubscribed(channelId, videoId: videoId)
         subscribed[channelId] = new
+        if new { Haptics.success() } else { Haptics.tap() }
         Task {
             do {
                 try await YouTube.setSubscribed(channelId, new)

@@ -77,6 +77,8 @@ final class PlayerModel: NSObject, ObservableObject {
         super.init()
         try? AVAudioSession.sharedInstance().setCategory(.playback, mode: .moviePlayback)
         player.allowsExternalPlayback = true
+        // Otherwise AVPlayer picks the audio language by the device settings (often an AI dub).
+        player.appliesMediaSelectionCriteriaAutomatically = false
         applyBackgroundPolicy()
 
         timeObserver = player.addPeriodicTimeObserver(forInterval: CMTime(seconds: 0.25, preferredTimescale: 600), queue: .main) { [weak self] time in
@@ -89,6 +91,8 @@ final class PlayerModel: NSObject, ObservableObject {
                 guard let self else { return }
                 let playing = status == .playing
                 if playing != self.isPlaying { self.isPlaying = playing }
+                // A video took over: music pauses and the lock screen shows the video.
+                if playing { MusicPlayer.shared.yieldFocus() }
                 self.updateNowPlaying()
             }
             .store(in: &cancellables)
@@ -158,6 +162,7 @@ final class PlayerModel: NSObject, ObservableObject {
             return
         }
         loadTask?.cancel()
+        MusicPlayer.shared.yieldFocus()
         current = video
         stream = nil
         details = nil
@@ -321,13 +326,24 @@ final class PlayerModel: NSObject, ObservableObject {
         guard let info = info ?? stream else { audioChoices = []; return }
         if let group = hlsAudioGroup, let item = player.currentItem {
             let selected = item.currentMediaSelection.selectedMediaOption(in: group)
-            audioChoices = group.options.enumerated().map { i, option in
-                var title = option.displayName
-                if StreamResolver.isOriginal(option, info: info), !title.lowercased().contains("original") {
+            let selectedLanguage = selected.map { StreamResolver.language(of: $0).lowercased() }
+            // Several audio groups (bitrates) list the same languages – show each once.
+            var seen = Set<String>()
+            audioChoices = group.options.enumerated().compactMap { i, option in
+                let language = StreamResolver.language(of: option).lowercased()
+                guard seen.insert(language.isEmpty ? option.displayName : language).inserted else { return nil }
+                let rendition = StreamResolver.rendition(of: option, info: info)
+                var title = Locale(identifier: "de").localizedString(forIdentifier: language).flatMap { $0.isEmpty ? nil : $0 }
+                    ?? option.displayName
+                if rendition?.isOriginal ?? StreamResolver.isOriginal(option, info: info) {
                     title += " (Original)"
+                } else if rendition?.isDubbed == true {
+                    title += " (KI-Übersetzung)"
                 }
-                return AudioChoice(id: "hls-\(i)", title: title, isSelected: option == selected)
+                let isSelected = option == selected || (!language.isEmpty && language == selectedLanguage)
+                return AudioChoice(id: "hls-\(i)", title: title, isSelected: isSelected)
             }
+            .sorted { ($0.title.contains("(Original)") ? 0 : 1, $0.title) < ($1.title.contains("(Original)") ? 0 : 1, $1.title) }
         } else if info.audioTracks.count > 1 {
             audioChoices = info.audioTracks.map { t in
                 var title = t.name
@@ -342,6 +358,7 @@ final class PlayerModel: NSObject, ObservableObject {
     /// Switches the audio language, keeping the playback position.
     func selectAudio(_ choice: AudioChoice) {
         guard !choice.isSelected else { return }
+        Haptics.selection()
         if let group = hlsAudioGroup, let item = player.currentItem,
            let index = Int(choice.id.dropFirst(4)), choice.id.hasPrefix("hls-"), group.options.indices.contains(index) {
             item.select(group.options[index], in: group)
@@ -375,6 +392,7 @@ final class PlayerModel: NSObject, ObservableObject {
     // MARK: Controls
 
     func togglePlay() {
+        Haptics.tap()
         if isPlaying { player.pause() } else { player.play() }
     }
 
@@ -419,6 +437,7 @@ final class PlayerModel: NSObject, ObservableObject {
     // MARK: Gestures
 
     func gestureSeek(forward: Bool) {
+        Haptics.tap()
         let step = Double(settings.seekInterval)
         seek(by: forward ? step : -step)
         let previous: Int
@@ -440,6 +459,7 @@ final class PlayerModel: NSObject, ObservableObject {
     /// leaving works as well when the landscape layout came from turning the device.
     func setFullscreen(_ on: Bool) {
         let wasFullscreen = isFullscreen
+        if on != wasFullscreen { Haptics.soft() }
         withAnimation(.smooth(duration: 0.3)) {
             isFullscreen = on
             if !on { videoFill = false }
@@ -465,6 +485,7 @@ final class PlayerModel: NSObject, ObservableObject {
     }
 
     func setQuality(_ q: VideoQuality) {
+        Haptics.selection()
         quality = q
         if let item = player.currentItem { apply(q, to: item) }
         showToast("Qualität: \(q.label)")
@@ -493,9 +514,11 @@ final class PlayerModel: NSObject, ObservableObject {
         let new = likeStatus == status ? "INDIFFERENT" : status
         let old = likeStatus
         likeStatus = new
+        if new == "INDIFFERENT" { Haptics.tap() } else { Haptics.like() }
         Task {
             do { try await YouTube.setLike(id, status: new) } catch {
                 likeStatus = old
+                Haptics.error()
                 showToast(error.localizedDescription)
             }
         }
@@ -505,12 +528,14 @@ final class PlayerModel: NSObject, ObservableObject {
         guard let cid = details?.channel?.id ?? current?.channelId else { return }
         let new = !isSubscribed
         isSubscribed = new
+        if new { Haptics.success() } else { Haptics.tap() }
         Task {
             do {
                 try await YouTube.setSubscribed(cid, new)
                 showToast(new ? "Abonniert" : "Abo beendet")
             } catch {
                 isSubscribed = !new
+                Haptics.error()
                 showToast(error.localizedDescription)
             }
         }
@@ -521,11 +546,37 @@ final class PlayerModel: NSObject, ObservableObject {
         Task {
             do {
                 try await YouTube.addToWatchLater(id)
+                Haptics.success()
                 showToast("Zu „Später ansehen“ hinzugefügt")
             } catch {
+                Haptics.error()
                 showToast(error.localizedDescription)
             }
         }
+    }
+
+    /// Inserts `video` right after the current one.
+    func playNextInQueue(_ video: Video) {
+        enqueue(video, next: true)
+    }
+
+    /// Appends `video` to the end of the queue.
+    func addToQueue(_ video: Video) {
+        enqueue(video, next: false)
+    }
+
+    private func enqueue(_ video: Video, next: Bool) {
+        guard let current else {
+            play(video)
+            return
+        }
+        guard video.id != current.id else { return }
+        if !queue.contains(where: { $0.id == current.id }) { queue = [current] }
+        queue.removeAll { $0.id == video.id }
+        let index = queue.firstIndex { $0.id == current.id } ?? 0
+        if next { queue.insert(video, at: index + 1) } else { queue.append(video) }
+        Haptics.success()
+        showToast(next ? "Wird als Nächstes abgespielt" : "Zur Warteschlange hinzugefügt")
     }
 
     func showToast(_ text: String) {
@@ -631,7 +682,7 @@ final class PlayerModel: NSObject, ObservableObject {
     }
 
     private func updateNowPlaying() {
-        guard let video = current else { return }
+        guard let video = current, !MusicPlayer.shared.isFocused else { return }
         var info: [String: Any] = [
             MPMediaItemPropertyTitle: stream?.title ?? video.title,
             MPMediaItemPropertyArtist: stream?.author ?? video.channelName ?? "",
@@ -647,9 +698,14 @@ final class PlayerModel: NSObject, ObservableObject {
 
     private func setupRemoteCommands() {
         let c = MPRemoteCommandCenter.shared()
+        // One set of handlers for both players: whoever has the focus gets the command.
         func on(_ command: MPRemoteCommand, _ action: @escaping @MainActor (PlayerModel, MPRemoteCommandEvent) -> Void) {
             command.addTarget { [weak self] event in
                 MainActor.assumeIsolated {
+                    if MusicPlayer.shared.isFocused {
+                        MusicPlayer.shared.handleRemote(command, event: event)
+                        return
+                    }
                     guard let self else { return }
                     action(self, event)
                 }
@@ -660,6 +716,7 @@ final class PlayerModel: NSObject, ObservableObject {
         on(c.pauseCommand) { m, _ in m.player.pause() }
         on(c.togglePlayPauseCommand) { m, _ in m.togglePlay() }
         on(c.nextTrackCommand) { m, _ in m.playNext() }
+        on(c.previousTrackCommand) { m, _ in m.seek(by: -m.player.currentTime().seconds) }
         c.skipForwardCommand.preferredIntervals = [10]
         c.skipBackwardCommand.preferredIntervals = [10]
         on(c.skipForwardCommand) { m, _ in m.seek(by: 10) }

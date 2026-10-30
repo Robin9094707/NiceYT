@@ -10,6 +10,7 @@ enum Route: Hashable {
     case liked
     case myPlaylists
     case subscriptionsList
+    case library
 }
 
 struct RouteDestination: View {
@@ -24,6 +25,7 @@ struct RouteDestination: View {
         case .liked: PlaylistView(playlistId: "LL")
         case .myPlaylists: BrowseFeedView(title: "Playlists", browseId: "FEplaylist_aggregation")
         case .subscriptionsList: SubscribedChannelsView()
+        case .library: LibraryView()
         }
     }
 }
@@ -309,29 +311,48 @@ struct VideoMenu: View {
     let video: Video
 
     var body: some View {
-        Button("Abspielen", systemImage: "play.fill") { player.play(video) }
-        Button("Im Mini-Player abspielen", systemImage: "pip") { player.play(video, present: false) }
-        if account.isSignedIn {
-            Button("Später ansehen", systemImage: "clock") {
-                Task {
-                    do {
-                        try await YouTube.addToWatchLater(video.id)
-                        player.showToast("Zu „Später ansehen“ hinzugefügt")
-                    } catch {
-                        player.showToast(error.localizedDescription)
+        Section {
+            Button("Abspielen", systemImage: "play.fill") { player.play(video) }
+            Button("Im Mini-Player abspielen", systemImage: "pip") { player.play(video, present: false) }
+            if player.current != nil, player.current?.id != video.id {
+                Button("Als Nächstes abspielen", systemImage: "text.line.first.and.arrowtriangle.forward") {
+                    player.playNextInQueue(video)
+                }
+                Button("Zur Warteschlange", systemImage: "text.badge.plus") { player.addToQueue(video) }
+            }
+        }
+        Section {
+            if account.isSignedIn {
+                Button("Später ansehen", systemImage: "clock") {
+                    Task {
+                        do {
+                            try await YouTube.addToWatchLater(video.id)
+                            Haptics.success()
+                            player.showToast("Zu „Später ansehen“ hinzugefügt")
+                        } catch {
+                            Haptics.error()
+                            player.showToast(error.localizedDescription)
+                        }
                     }
                 }
             }
+            Button("Song auf Deezer suchen", systemImage: "music.note") {
+                MusicSearchRequest.shared.search(video.title)
+            }
         }
-        ShareLink(item: video.shareURL) { Label("Teilen", systemImage: "square.and.arrow.up") }
-        Button("Link kopieren", systemImage: "link") {
-            UIPasteboard.general.url = video.shareURL
-            player.showToast("Link kopiert")
+        Section {
+            ShareLink(item: video.shareURL) { Label("Teilen", systemImage: "square.and.arrow.up") }
+            Button("Link kopieren", systemImage: "link") {
+                UIPasteboard.general.url = video.shareURL
+                Haptics.success()
+                player.showToast("Link kopiert")
+            }
         }
     }
 }
 
 struct ShortCard: View {
+    @EnvironmentObject private var player: PlayerModel
     let video: Video
     var onTap: () -> Void
 
@@ -357,6 +378,13 @@ struct ShortCard: View {
                 .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
         }
         .buttonStyle(.plain)
+        .contextMenu {
+            Button("Als Short ansehen", systemImage: "bolt.horizontal.fill") { onTap() }
+            VideoMenu(video: video)
+        } preview: {
+            RemoteImage(url: video.thumbnail ?? URL(string: "https://i.ytimg.com/vi/\(video.id)/oar2.jpg"))
+                .frame(width: 270, height: 480)
+        }
     }
 }
 
@@ -381,6 +409,14 @@ struct ChannelRow: View {
             .glassEffect(.regular.interactive(), in: .rect(cornerRadius: 22))
         }
         .buttonStyle(.plain)
+        .contextMenu {
+            let url = URL(string: "https://www.youtube.com/channel/\(channel.id)")!
+            ShareLink(item: url) { Label("Kanal teilen", systemImage: "square.and.arrow.up") }
+            Button("Link kopieren", systemImage: "link") {
+                UIPasteboard.general.url = url
+                Haptics.success()
+            }
+        }
     }
 }
 
@@ -397,6 +433,18 @@ struct PlaylistRow: View {
             }
         }
         .buttonStyle(.plain)
+        .contextMenu {
+            if let first = playlist.firstVideoId {
+                Button("Abspielen", systemImage: "play.fill") { player.play(Video(id: first, title: "")) }
+            }
+            let url = URL(string: "https://www.youtube.com/playlist?list=\(playlist.id)")!
+            ShareLink(item: url) { Label("Playlist teilen", systemImage: "square.and.arrow.up") }
+            Button("Link kopieren", systemImage: "link") {
+                UIPasteboard.general.url = url
+                Haptics.success()
+                player.showToast("Link kopiert")
+            }
+        }
     }
 
     private var content: some View {
@@ -657,7 +705,10 @@ struct Chip: View {
     var action: () -> Void
 
     var body: some View {
-        Button(action: action) {
+        Button {
+            if !selected { Haptics.selection() }
+            action()
+        } label: {
             HStack(spacing: 6) {
                 if let systemImage { Image(systemName: systemImage) }
                 Text(title)
@@ -702,5 +753,49 @@ struct SignInPrompt: View {
         .frame(maxWidth: .infinity)
         .glassEffect(.regular, in: .rect(cornerRadius: 28))
         .sheet(isPresented: $showLogin) { GoogleLoginView() }
+    }
+}
+
+/// Avatar in the toolbar that opens "Du" (history, watch later, likes, playlists).
+struct LibraryButton: View {
+    @EnvironmentObject private var account: AccountStore
+
+    var body: some View {
+        NavigationLink(value: Route.library) {
+            if let avatar = account.info?.avatar {
+                Avatar(url: avatar, size: 30)
+            } else {
+                Image(systemName: "person.crop.circle")
+            }
+        }
+        .accessibilityLabel("Du – Bibliothek")
+    }
+}
+
+// MARK: - Share sheet
+
+/// Presents the system share sheet from anywhere (e.g. from confirmation dialogs,
+/// where `ShareLink` isn't available).
+@MainActor
+enum ShareSheet {
+    static func present(_ items: [Any]) {
+        guard let scene = UIApplication.shared.connectedScenes.compactMap({ $0 as? UIWindowScene })
+                .first(where: { $0.activationState == .foregroundActive }) ?? UIApplication.shared.connectedScenes
+                .compactMap({ $0 as? UIWindowScene }).first,
+              var top = scene.keyWindow?.rootViewController ?? scene.windows.first?.rootViewController else { return }
+        while let presented = top.presentedViewController, !presented.isBeingDismissed { top = presented }
+        let controller = UIActivityViewController(activityItems: items, applicationActivities: nil)
+        if let popover = controller.popoverPresentationController {
+            popover.sourceView = top.view
+            popover.sourceRect = CGRect(x: top.view.bounds.midX, y: top.view.bounds.midY, width: 0, height: 0)
+            popover.permittedArrowDirections = []
+        }
+        Haptics.soft()
+        // Wait for a dismissing dialog/menu to get out of the way.
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) {
+            var host = top
+            while let presented = host.presentedViewController, !presented.isBeingDismissed { host = presented }
+            host.present(controller, animated: true)
+        }
     }
 }

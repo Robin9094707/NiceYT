@@ -6,46 +6,43 @@ struct LibraryView: View {
     @State private var showSettings = false
 
     var body: some View {
-        NavigationStack {
-            ScrollView {
-                VStack(alignment: .leading, spacing: 22) {
-                    if account.isSignedIn {
-                        profileCard
-                        recentHistory
-                        GlassEffectContainer(spacing: 12) {
-                            VStack(spacing: 12) {
-                                LibraryRow(title: "Verlauf", icon: "clock.arrow.circlepath", route: .history)
-                                LibraryRow(title: "Später ansehen", icon: "clock.fill", route: .watchLater)
-                                LibraryRow(title: "Videos mit „Mag ich“", icon: "hand.thumbsup.fill", route: .liked)
-                                LibraryRow(title: "Playlists", icon: "list.bullet.rectangle.fill", route: .myPlaylists)
-                                LibraryRow(title: "Abonnierte Kanäle", icon: "person.2.fill", route: .subscriptionsList)
-                            }
+        ScrollView {
+            VStack(alignment: .leading, spacing: 22) {
+                if account.isSignedIn {
+                    profileCard
+                    recentHistory
+                    GlassEffectContainer(spacing: 12) {
+                        VStack(spacing: 12) {
+                            LibraryRow(title: "Verlauf", icon: "clock.arrow.circlepath", route: .history)
+                            LibraryRow(title: "Später ansehen", icon: "clock.fill", route: .watchLater)
+                            LibraryRow(title: "Videos mit „Mag ich“", icon: "hand.thumbsup.fill", route: .liked)
+                            LibraryRow(title: "Playlists", icon: "list.bullet.rectangle.fill", route: .myPlaylists)
+                            LibraryRow(title: "Abonnierte Kanäle", icon: "person.2.fill", route: .subscriptionsList)
                         }
-                    } else {
-                        SignInPrompt(title: "Deine Bibliothek",
-                                     message: "Verlauf, „Später ansehen“, Likes und Playlists – synchronisiert mit deinem YouTube-Konto.")
-                            .padding(.top, 30)
                     }
-                    featureCard
+                } else {
+                    SignInPrompt(title: "Deine Bibliothek",
+                                 message: "Verlauf, „Später ansehen“, Likes und Playlists – synchronisiert mit deinem YouTube-Konto.")
+                        .padding(.top, 30)
                 }
-                .padding(16)
+                featureCard
             }
-            .navigationTitle("Du")
-            .toolbar {
-                ToolbarItem(placement: .topBarTrailing) {
-                    Button { showSettings = true } label: { Image(systemName: "gearshape.fill") }
-                }
+            .padding(16)
+        }
+        .navigationTitle("Du")
+        .toolbar {
+            ToolbarItem(placement: .topBarTrailing) {
+                Button { showSettings = true } label: { Image(systemName: "gearshape.fill") }
             }
-            .sheet(isPresented: $showSettings) { SettingsView() }
-            .withRoutes()
-            .task { if account.isSignedIn { await history.load() } }
-            .onChange(of: account.isSignedIn) { _, signedIn in
-                if signedIn { Task { await history.load(force: true) } }
-            }
-            .refreshable {
-                await account.refresh()
-                await history.load(force: true)
-            }
+        }
+        .sheet(isPresented: $showSettings) { SettingsView() }
+        .task { if account.isSignedIn { await history.load() } }
+        .onChange(of: account.isSignedIn) { _, signedIn in
+            if signedIn { Task { await history.load(force: true) } }
+        }
+        .refreshable {
+            await account.refresh()
+            await history.load(force: true)
         }
     }
 
@@ -93,9 +90,11 @@ struct LibraryView: View {
 
     private var featureCard: some View {
         VStack(alignment: .leading, spacing: 10) {
-            Label("NiceYT Premium-Features", systemImage: "sparkles").font(.headline)
+            Label("NicePlay Premium-Features", systemImage: "sparkles").font(.headline)
             Group {
                 Label("Komplett werbefrei", systemImage: "nosign")
+                Label("Immer Originalton statt KI-Übersetzung", systemImage: "waveform")
+                Label("Deezer: streamen & in FLAC herunterladen", systemImage: "music.note")
                 Label("Hintergrundwiedergabe & Bild-in-Bild", systemImage: "pip")
                 Label("SponsorBlock überspringt Sponsoren", systemImage: "forward.end.alt")
                 Label("Dislikes wieder sichtbar", systemImage: "hand.thumbsdown")

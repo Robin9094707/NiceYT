@@ -76,7 +76,7 @@ struct HomeView: View {
                 }
             }
             .id("\(topic.rawValue)-\(loaders.generation)")
-            .navigationTitle("NiceYT")
+            .navigationTitle("NicePlay")
             .toolbar {
                 ToolbarItem(placement: .topBarLeading) {
                     Image(systemName: "play.rectangle.fill")
@@ -85,14 +85,10 @@ struct HomeView: View {
                         .symbolEffect(.bounce, value: topic)
                 }
                 ToolbarItem(placement: .topBarTrailing) {
-                    Button { showAccount = true } label: {
-                        if let avatar = account.info?.avatar {
-                            Avatar(url: avatar, size: 30)
-                        } else {
-                            Image(systemName: "person.crop.circle")
-                        }
-                    }
+                    Button { showAccount = true } label: { Image(systemName: "gearshape") }
+                        .accessibilityLabel("Einstellungen")
                 }
+                ToolbarItem(placement: .topBarTrailing) { LibraryButton() }
             }
             .sheet(isPresented: $showAccount) { SettingsView() }
             .withRoutes()

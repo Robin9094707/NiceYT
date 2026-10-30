@@ -266,7 +266,13 @@ struct CommentRow: View {
                 }
                 Text(comment.text)
                     .font(.subheadline)
-                    .textSelection(.enabled)
+                    .contextMenu {
+                        Button("Text kopieren", systemImage: "doc.on.doc") {
+                            UIPasteboard.general.string = comment.text
+                            Haptics.success()
+                        }
+                        ShareLink(item: comment.text) { Label("Teilen", systemImage: "square.and.arrow.up") }
+                    }
                 HStack(spacing: 14) {
                     Label(comment.likes ?? "", systemImage: "hand.thumbsup")
                         .font(.caption)

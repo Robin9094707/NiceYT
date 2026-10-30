@@ -511,6 +511,7 @@ enum Parser {
             let link = (url ?? cipher?.2 ?? "").removingPercentEncoding ?? ""
             raw.audioIsOriginal = link.contains("acont=original")
                 || (raw.audioName?.lowercased().contains("original") ?? false)
+                || (raw.audioTrackId?.hasSuffix(".4") ?? false)
             raw.audioIsDubbed = link.contains("acont=dubbed")
             return raw
         }

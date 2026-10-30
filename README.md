@@ -1,6 +1,6 @@
-# NiceYT
+# NicePlay (ehemals NiceYT)
 
-Ein nativer, werbefreier YouTube-Client für iOS 26+ im **Liquid-Glass-Design** – komplett in SwiftUI geschrieben, ohne Web-Views fürs Abspielen.
+Ein nativer, werbefreier YouTube-Client **und Deezer-Musikplayer** für iOS 26+ im **Liquid-Glass-Design** – komplett in SwiftUI geschrieben, ohne Web-Views fürs Abspielen.
 
 <p align="center"><img src="NiceYT/Resources/Assets.xcassets/AppIcon.appiconset/icon-1024.png" width="160"></p>
 
@@ -20,6 +20,10 @@ Ein nativer, werbefreier YouTube-Client für iOS 26+ im **Liquid-Glass-Design** 
 | ⏭ **SponsorBlock** | Überspringt Sponsoren, Eigenwerbung, Intros … (einstellbar) |
 | 👎 **Dislikes** | Über Return YouTube Dislike |
 | 💬 **Untertitel** | Alle verfügbaren Spuren inkl. automatischer Untertitel |
+| 🗣 **Originalton** | Immer die echte Tonspur – keine KI-Synchronisation von YouTube (umschaltbar pro Video) |
+| 🎵 **Deezer** | Anmeldung per Deezer-Login oder ARL-Cookie, Suche, Alben, Künstler, Playlists, Lieblingssongs, Charts, Flow |
+| ⬇️ **Musik-Downloads** | MP3 320 oder FLAC inkl. Cover & Tags, offline hören, in jede App teilen, sichtbar in der Dateien-App |
+| 📳 **Haptik & Long-Press** | Haptisches Feedback bei Likes, Abos, Gesten; langes Drücken öffnet überall weitere Aktionen (auch bei Shorts) |
 | 🪟 **Liquid Glass** | Glas-Tabbar mit Mini-Player als Accessory, Glas-Chips, -Buttons und -Karten |
 
 ## IPA bauen (GitHub Actions)
@@ -36,6 +40,12 @@ Die IPA ist unsigniert und wird beim Sideloaden mit deiner Apple-ID signiert:
 - **TrollStore** – direkt installierbar (fake-signiert)
 
 Voraussetzung: **iOS 26 oder neuer**.
+
+## Deezer verbinden
+
+Tab **Musik → Bei Deezer anmelden** und ganz normal einloggen – die App übernimmt den `arl`-Cookie automatisch.
+Alternativ den `arl`-Cookie von deezer.com (Entwicklertools → Cookies) einfügen. Für 320 kbit/s bzw. FLAC
+wird ein entsprechendes Deezer-Abo benötigt. Downloads liegen unter *Dateien → Auf meinem iPhone → NicePlay → Musik*.
 
 ## Anmeldung
 

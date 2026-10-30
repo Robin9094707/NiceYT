@@ -57,6 +57,7 @@ struct ShortPage: View {
     let item: ShortItem
     let isCurrent: Bool
     @State private var showHeart = false
+    @State private var showActions = false
 
     private var state: ShortsModel.LoadState? { shorts.states[item.id] }
     private var details: WatchDetails? { shorts.details[item.id] }
@@ -94,6 +95,12 @@ struct ShortPage: View {
                 guard state == .ready else { return }
                 withAnimation(.spring) { shorts.togglePause() }
             }
+            .onLongPressGesture(minimumDuration: 0.45) {
+                Haptics.impact()
+                showActions = true
+            }
+            .confirmationDialog(item.video.title.isEmpty ? (details?.title ?? "Short") : item.video.title,
+                                isPresented: $showActions, titleVisibility: .visible) { longPressActions }
             .overlay(alignment: .bottomLeading) { info }
             .overlay(alignment: .bottomTrailing) { actions }
             .overlay(alignment: .bottom) {
@@ -150,7 +157,45 @@ struct ShortPage: View {
             try? await Task.sleep(for: .milliseconds(700))
             withAnimation(.easeOut) { showHeart = false }
         }
-        if !liked { shorts.setLiked(item.id, true) { player.showToast($0) } }
+        if !liked { shorts.setLiked(item.id, true) { player.showToast($0) } } else { Haptics.tap() }
+    }
+
+    @ViewBuilder private var longPressActions: some View {
+        Button(liked ? "„Mag ich“ entfernen" : "Mag ich") {
+            shorts.setLiked(item.id, !liked) { player.showToast($0) }
+        }
+        Button("Kommentare") { shorts.showComments(item) { player.showToast($0) } }
+        if let cid = channelId, account.isSignedIn {
+            Button(shorts.isSubscribed(cid, videoId: item.id) ? "Abo beenden" : "Kanal abonnieren") {
+                shorts.toggleSubscribe(cid, videoId: item.id) { player.showToast($0) }
+            }
+        }
+        if account.isSignedIn {
+            Button("Später ansehen") {
+                Task {
+                    do {
+                        try await YouTube.addToWatchLater(item.id)
+                        Haptics.success()
+                        player.showToast("Zu „Später ansehen“ hinzugefügt")
+                    } catch {
+                        Haptics.error()
+                        player.showToast(error.localizedDescription)
+                    }
+                }
+            }
+        }
+        Button("Im Player öffnen") { openInPlayer() }
+        Button("Song auf Deezer suchen") {
+            shorts.setTabActive(false)
+            MusicSearchRequest.shared.search(item.video.title.isEmpty ? (details?.title ?? "") : item.video.title)
+        }
+        Button("Teilen …") { ShareSheet.present([item.video.shareURL]) }
+        Button("Link kopieren") {
+            UIPasteboard.general.url = item.video.shareURL
+            Haptics.success()
+            player.showToast("Link kopiert")
+        }
+        Button("Abbrechen", role: .cancel) {}
     }
 
     private func openInPlayer() {

@@ -63,10 +63,11 @@ struct SettingsView: View {
                     }
                     Toggle("Hochwischen für Querformat", isOn: $settings.swipeFullscreen)
                     Toggle("Lautstärke & Helligkeit wischen", isOn: $settings.swipeVolume)
+                    Toggle("Haptisches Feedback", isOn: $settings.haptics)
                 } header: {
-                    Text("Gesten")
+                    Text("Bedienung & Gesten")
                 } footer: {
-                    Text("Im Querformat: rechts wischen ändert die Lautstärke, links die Helligkeit. In der Mitte nach unten wischen beendet das Querformat.")
+                    Text("Im Querformat: rechts wischen ändert die Lautstärke, links die Helligkeit. In der Mitte nach unten wischen beendet das Querformat. Lange auf Videos, Shorts, Kanäle, Playlists und Songs drücken öffnet weitere Aktionen.")
                 }
 
                 Section {
@@ -115,6 +116,19 @@ struct SettingsView: View {
                 }
 
                 Section {
+                    Picker("Streaming-Qualität", selection: $settings.musicStreamQuality) {
+                        ForEach(DZQuality.allCases) { Text($0.label).tag($0) }
+                    }
+                    Picker("Download-Qualität", selection: $settings.musicDownloadQuality) {
+                        ForEach(DZQuality.allCases) { Text($0.label).tag($0) }
+                    }
+                } header: {
+                    Text("Musik (Deezer)")
+                } footer: {
+                    Text("Höhere Stufen werden nur genutzt, wenn dein Deezer-Abo sie erlaubt – sonst automatisch die nächstbeste. FLAC-Dateien sind ca. 30 MB pro Song, MP3 320 ca. 8 MB.")
+                }
+
+                Section {
                     NavigationLink {
                         DiagnosticsView()
                     } label: {
@@ -142,7 +156,7 @@ struct SettingsView: View {
                         Label("Quellcode auf GitHub", systemImage: "chevron.left.forwardslash.chevron.right")
                     }
                 } footer: {
-                    Text("NiceYT ist ein inoffizieller Client und steht in keiner Verbindung zu Google oder YouTube.")
+                    Text("NicePlay ist ein inoffizieller Client und steht in keiner Verbindung zu Google, YouTube oder Deezer.")
                 }
             }
             .navigationTitle("Einstellungen")

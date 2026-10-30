@@ -88,6 +88,9 @@ final class AppSettings: ObservableObject {
     @Published var swipeFullscreen: Bool { didSet { d.set(swipeFullscreen, forKey: "swipeFullscreen") } }
     @Published var swipeVolume: Bool { didSet { d.set(swipeVolume, forKey: "swipeVolume") } }
     @Published var resumePlayback: Bool { didSet { d.set(resumePlayback, forKey: "resumePlayback") } }
+    @Published var haptics: Bool { didSet { d.set(haptics, forKey: "haptics") } }
+    @Published var musicStreamQuality: DZQuality { didSet { d.set(musicStreamQuality.rawValue, forKey: "musicStreamQuality") } }
+    @Published var musicDownloadQuality: DZQuality { didSet { d.set(musicDownloadQuality.rawValue, forKey: "musicDownloadQuality") } }
     @Published var accent: AccentChoice { didSet { d.set(accent.rawValue, forKey: "accent") } }
     @Published var audioPreference: AudioPreference { didSet { d.set(audioPreference.rawValue, forKey: "audioPreference") } }
     @Published var language: String { didSet { d.set(language, forKey: "hl") } }
@@ -127,6 +130,9 @@ final class AppSettings: ObservableObject {
             "swipeFullscreen": true,
             "swipeVolume": false,
             "resumePlayback": true,
+            "haptics": true,
+            "musicStreamQuality": DZQuality.mp3_320.rawValue,
+            "musicDownloadQuality": DZQuality.flac.rawValue,
             "accent": AccentChoice.red.rawValue,
             "audioPreference": AudioPreference.original.rawValue,
             // The app is German, so YouTube content (dates, view counts, comment sorting …)
@@ -135,6 +141,11 @@ final class AppSettings: ObservableObject {
             "gl": Self.defaultRegion,
             "sponsorCategories": ["sponsor", "selfpromo", "interaction"]
         ])
+        // Version 1.3: the original voice is the default for everyone (AI dubs only on request).
+        if !d.bool(forKey: "audioOriginalMigrated") {
+            d.set(AudioPreference.original.rawValue, forKey: "audioPreference")
+            d.set(true, forKey: "audioOriginalMigrated")
+        }
         quality = VideoQuality(rawValue: d.string(forKey: "quality") ?? "") ?? .auto
         sponsorBlock = d.bool(forKey: "sponsorBlock")
         dislikes = d.bool(forKey: "dislikes")
@@ -148,6 +159,9 @@ final class AppSettings: ObservableObject {
         swipeFullscreen = d.bool(forKey: "swipeFullscreen")
         swipeVolume = d.bool(forKey: "swipeVolume")
         resumePlayback = d.bool(forKey: "resumePlayback")
+        haptics = d.bool(forKey: "haptics")
+        musicStreamQuality = DZQuality(rawValue: d.string(forKey: "musicStreamQuality") ?? "") ?? .mp3_320
+        musicDownloadQuality = DZQuality(rawValue: d.string(forKey: "musicDownloadQuality") ?? "") ?? .flac
         accent = AccentChoice(rawValue: d.string(forKey: "accent") ?? "") ?? .red
         audioPreference = AudioPreference(rawValue: d.string(forKey: "audioPreference") ?? "") ?? .original
         language = d.string(forKey: "hl") ?? "de"
@@ -183,5 +197,6 @@ final class AppSettings: ObservableObject {
     static var audioPreferenceValue: AudioPreference {
         AudioPreference(rawValue: UserDefaults.standard.string(forKey: "audioPreference") ?? "") ?? .original
     }
+    static var hapticsEnabled: Bool { UserDefaults.standard.object(forKey: "haptics") as? Bool ?? true }
     static var gl: String { UserDefaults.standard.string(forKey: "gl") ?? "DE" }
 }

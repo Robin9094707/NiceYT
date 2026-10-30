@@ -74,37 +74,102 @@ enum StreamResolver {
         }
     }
 
-    /// Selects the HLS audio rendition matching the audio preference (original vs.
-    /// AI-dubbed translation). Returns the group when there is a choice at all.
+    /// Selects the HLS audio rendition chosen by the audio preference (by language, which
+    /// unlike the display name is reliable). Returns the group when there is a choice at all.
     @MainActor
     @discardableResult
     static func applyAudioPreference(_ item: AVPlayerItem, info: StreamInfo) async -> AVMediaSelectionGroup? {
         guard let group = try? await item.asset.loadMediaSelectionGroup(for: .audible), group.options.count > 1 else {
             return nil
         }
-        if AppSettings.audioPreferenceValue != .system,
-           let best = group.options.max(by: { score($0, in: group, info: info) < score($1, in: group, info: info) }) {
+        if let wanted = info.hlsAudioLanguage, let match = Self.option(for: wanted, in: group) {
+            item.select(match, in: group)
+        } else if AppSettings.audioPreferenceValue != .system,
+                  let best = group.options.max(by: { score($0, in: group, info: info) < score($1, in: group, info: info) }) {
             item.select(best, in: group)
         }
         return group
     }
 
     @MainActor
+    static func option(for language: String, in group: AVMediaSelectionGroup) -> AVMediaSelectionOption? {
+        let wanted = language.lowercased()
+        return group.options.first { Self.language(of: $0).lowercased() == wanted }
+            ?? group.options.first { Self.language(of: $0).lowercased().hasPrefix(wanted.prefix(2)) }
+    }
+
+    @MainActor
+    static func rendition(of option: AVMediaSelectionOption, info: StreamInfo) -> HLSAudioRendition? {
+        let lang = language(of: option).lowercased()
+        return info.hlsAudio.first { $0.language.lowercased() == lang }
+            ?? info.hlsAudio.first { $0.name == option.displayName }
+    }
+
+    @MainActor
     static func score(_ option: AVMediaSelectionOption, in group: AVMediaSelectionGroup, info: StreamInfo) -> Int {
-        AudioMatch.score(name: option.displayName, language: language(of: option),
-                         isDefault: option == group.defaultOption,
-                         original: info.hlsOriginalAudio.contains(option.displayName),
-                         dubbed: info.hlsDubbedAudio.contains(option.displayName))
+        let r = rendition(of: option, info: info)
+        return AudioMatch.score(name: option.displayName, language: language(of: option),
+                                isDefault: option == group.defaultOption,
+                                original: r?.isOriginal ?? false, dubbed: r?.isDubbed ?? false)
     }
 
     @MainActor
     static func isOriginal(_ option: AVMediaSelectionOption, info: StreamInfo) -> Bool {
-        info.hlsOriginalAudio.contains(option.displayName) || option.displayName.lowercased().contains("original")
+        rendition(of: option, info: info)?.isOriginal ?? option.displayName.lowercased().contains("original")
     }
 
     @MainActor
     static func language(of option: AVMediaSelectionOption) -> String {
         option.extendedLanguageTag ?? option.locale?.identifier ?? ""
+    }
+
+    /// Parses the audio renditions of a YouTube master playlist. The URIs and the
+    /// YT-EXT-XTAGS carry "acont=original" / "acont=dubbed(-auto)", the content id ends in
+    /// ".4" for the original voice.
+    static func audioRenditions(in master: String) -> [HLSAudioRendition] {
+        var out: [HLSAudioRendition] = []
+        for line in master.components(separatedBy: "\n") where line.hasPrefix("#EXT-X-MEDIA") && line.contains("TYPE=AUDIO") {
+            let name = attribute("NAME", in: line) ?? ""
+            let language = attribute("LANGUAGE", in: line) ?? ""
+            guard !language.isEmpty, !out.contains(where: { $0.language == language }) else { continue }
+            var tags = (line.removingPercentEncoding ?? line).lowercased()
+            if let x = attribute("YT-EXT-XTAGS", in: line), let data = Data(base64Encoded: padded(x)) {
+                tags += String(decoding: data, as: UTF8.self).lowercased()
+            }
+            let contentId = attribute("YT-EXT-AUDIO-CONTENT-ID", in: line) ?? ""
+            let original = tags.contains("acont=original") || tags.contains("original") && !tags.contains("dubbed")
+                || contentId.hasSuffix(".4")
+            let dubbed = !original && (tags.contains("dubbed") || name.lowercased().contains("dubbed"))
+            out.append(HLSAudioRendition(name: name, language: language, isOriginal: original, isDubbed: dubbed))
+        }
+        return out
+    }
+
+    /// The rendition to play according to the audio preference.
+    static func preferredRendition(_ renditions: [HLSAudioRendition]) -> HLSAudioRendition? {
+        renditions.max {
+            AudioMatch.score(name: $0.name, language: $0.language, isDefault: false, original: $0.isOriginal, dubbed: $0.isDubbed)
+                < AudioMatch.score(name: $1.name, language: $1.language, isDefault: false, original: $1.isOriginal, dubbed: $1.isDubbed)
+        }
+    }
+
+    static func attribute(_ key: String, in line: String) -> String? {
+        let quoted = "[:,]" + NSRegularExpression.escapedPattern(for: key) + "=\"([^\"]*)\""
+        if let r = line.range(of: quoted, options: .regularExpression) {
+            let match = line[r]
+            guard let q = match.firstIndex(of: "\"") else { return nil }
+            return String(match[match.index(after: q)...].dropLast())
+        }
+        let plain = "[:,]" + NSRegularExpression.escapedPattern(for: key) + "=([^,]*)"
+        if let r = line.range(of: plain, options: .regularExpression), let eq = line[r].firstIndex(of: "=") {
+            return String(line[r][line.index(after: eq)...])
+        }
+        return nil
+    }
+
+    private static func padded(_ base64: String) -> String {
+        let s = base64.replacingOccurrences(of: "-", with: "+").replacingOccurrences(of: "_", with: "/")
+        return s + String(repeating: "=", count: (4 - s.count % 4) % 4)
     }
 
     static func headers(for info: StreamInfo) -> [String: String] {
@@ -161,14 +226,14 @@ enum StreamResolver {
         if let first = variants.first(where: { $0.contains("avc1") }) ?? variants.first {
             DebugLog.log("[\(label)] Variante: \(first.prefix(150))")
         }
-        // Remember which audio renditions YouTube marks as original or AI-dubbed.
+        // YouTube marks no audio rendition as DEFAULT, so AVPlayer would pick one by the
+        // device language – often an AI dub. Remember which one the preference wants.
         var info = info
-        for line in master.components(separatedBy: "\n") where line.hasPrefix("#EXT-X-MEDIA") && line.contains("TYPE=AUDIO") {
-            guard let r = line.range(of: #"NAME="([^"]+)""#, options: .regularExpression) else { continue }
-            let name = String(line[r].dropFirst(6).dropLast())
-            let lower = line.lowercased()
-            if lower.contains("acont=original") || lower.contains("acont%3doriginal") { info.hlsOriginalAudio.insert(name) }
-            if lower.contains("acont=dubbed") || lower.contains("acont%3ddubbed") { info.hlsDubbedAudio.insert(name) }
+        info.hlsAudio = audioRenditions(in: master)
+        if info.hlsAudio.count > 1, AppSettings.audioPreferenceValue != .system {
+            info.hlsAudioLanguage = preferredRendition(info.hlsAudio)?.language
+            let tags = info.hlsAudio.map { "\($0.language)\($0.isOriginal ? "*" : $0.isDubbed ? "~" : "")" }
+            DebugLog.log("[\(label)] Tonspuren: \(tags.joined(separator: " ")) → \(info.hlsAudioLanguage ?? "?")")
         }
 
         // 2. One variant playlist (prefer H.264 ~720p) to discover segment URLs.
@@ -200,9 +265,10 @@ enum StreamResolver {
             DebugLog.log("[\(label)] Kein Segment in der Playlist gefunden")
         }
 
-        // 5. Build the asset — through the proxy when playlists need rewriting.
-        if !map.isEmpty || (info.poToken?.isEmpty == false) {
-            let proxy = HLSProxy(nMap: map, poToken: info.poToken, headers: hdrs)
+        // 5. Build the asset — through the proxy when playlists need rewriting
+        //    (n values, PO token, or the audio rendition to mark as default).
+        if !map.isEmpty || (info.poToken?.isEmpty == false) || info.hlsAudioLanguage != nil {
+            let proxy = HLSProxy(nMap: map, poToken: info.poToken, headers: hdrs, audioLanguage: info.hlsAudioLanguage)
             let asset = AVURLAsset(url: HLSProxy.proxied(info.hlsURL), options: ["AVURLAssetHTTPHeaderFieldsKey": hdrs])
             asset.resourceLoader.setDelegate(proxy, queue: proxy.queue)
             return PreparedStream(info: info, asset: asset, label: label + " (Proxy)", proxy: proxy)
@@ -291,12 +357,32 @@ final class HLSProxy: NSObject, AVAssetResourceLoaderDelegate, @unchecked Sendab
     private let nMap: [String: String]
     private let poToken: String?
     private let headers: [String: String]
+    /// LANGUAGE of the audio rendition that becomes the only DEFAULT/AUTOSELECT one.
+    private let audioLanguage: String?
     private var tasks: [ObjectIdentifier: URLSessionDataTask] = [:]
 
-    init(nMap: [String: String], poToken: String?, headers: [String: String]) {
+    init(nMap: [String: String], poToken: String?, headers: [String: String], audioLanguage: String? = nil) {
         self.nMap = nMap
         self.poToken = (poToken?.isEmpty == false) ? poToken : nil
         self.headers = headers
+        self.audioLanguage = audioLanguage
+    }
+
+    /// Makes the wanted audio rendition the default and keeps AVPlayer from auto-selecting
+    /// another language (e.g. an AI dub matching the device language).
+    static func forcingAudio(_ line: String, language: String) -> String {
+        let lang = StreamResolver.attribute("LANGUAGE", in: line) ?? ""
+        let chosen = lang.lowercased() == language.lowercased()
+        var out = line
+        for (key, value) in [("DEFAULT", chosen), ("AUTOSELECT", chosen)] {
+            let replacement = "\(key)=\(value ? "YES" : "NO")"
+            if let r = out.range(of: "(?<=[:,])\(key)=(YES|NO)", options: .regularExpression) {
+                out.replaceSubrange(r, with: replacement)
+            } else {
+                out += "," + replacement
+            }
+        }
+        return out
     }
 
     static func proxied(_ url: URL) -> URL {
@@ -362,6 +448,10 @@ final class HLSProxy: NSObject, AVAssetResourceLoaderDelegate, @unchecked Sendab
             let t = line.trimmingCharacters(in: .whitespaces)
             if t.isEmpty { out.append(line); continue }
             if t.hasPrefix("#") {
+                var t = t
+                if isMaster, let lang = audioLanguage, t.hasPrefix("#EXT-X-MEDIA"), t.contains("TYPE=AUDIO") {
+                    t = Self.forcingAudio(t, language: lang)
+                }
                 if isMaster, t.hasPrefix("#EXT-X-MEDIA"), let r = t.range(of: #"URI="([^"]+)""#, options: .regularExpression) {
                     let uri = String(t[r].dropFirst(5).dropLast())
                     if let abs = absolute(uri, base: base) {
@@ -377,7 +467,7 @@ final class HLSProxy: NSObject, AVAssetResourceLoaderDelegate, @unchecked Sendab
                         continue
                     }
                 }
-                out.append(line)
+                out.append(t)
                 continue
             }
             guard let abs = absolute(t, base: base) else { out.append(line); continue }

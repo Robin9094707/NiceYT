@@ -122,6 +122,14 @@ struct AudioTrack: Hashable, Sendable {
     let isDubbed: Bool
 }
 
+/// One `#EXT-X-MEDIA:TYPE=AUDIO` entry of a YouTube HLS master playlist.
+struct HLSAudioRendition: Hashable, Sendable {
+    let name: String
+    let language: String
+    let isOriginal: Bool
+    let isDubbed: Bool
+}
+
 /// Audio track entry shown in the player's menu.
 struct AudioChoice: Identifiable, Hashable {
     let id: String
@@ -150,9 +158,10 @@ struct StreamInfo: Sendable {
     let captions: [CaptionTrack]
     /// All audio languages of an adaptive stream (`audioURL` is the selected one).
     var audioTracks: [AudioTrack] = []
-    /// HLS audio renditions marked as original / dubbed by YouTube (by NAME).
-    var hlsOriginalAudio: Set<String> = []
-    var hlsDubbedAudio: Set<String> = []
+    /// Audio renditions listed in the HLS master playlist (original / AI-dubbed languages).
+    var hlsAudio: [HLSAudioRendition] = []
+    /// LANGUAGE of the HLS rendition chosen by the audio preference.
+    var hlsAudioLanguage: String?
 
     /// Identifies the source, so a failed one isn't tried again.
     var sourceKey: String { source + (isHLS ? " HLS" : "") }
