@@ -414,10 +414,20 @@ struct BrowserSettingsView: View {
 
     var body: some View {
         Form {
-            Section("Suche") {
+            Section {
+                Picker(selection: $library.barPosition) {
+                    ForEach(BarPosition.allCases) { Text($0.label).tag($0) }
+                } label: {
+                    Label("Adressleiste", systemImage: "rectangle.topthird.inset.filled")
+                }
+                .pickerStyle(.segmented)
                 Picker("Suchmaschine", selection: $library.searchEngine) {
                     ForEach(SearchEngine.allCases) { Text($0.name).tag($0) }
                 }
+            } header: {
+                Text("Darstellung & Suche")
+            } footer: {
+                Text("„Oben“ wie Safari: Adressleiste oben, Zurück, Vor, Downloads, Lesezeichen und Tabs unten.")
             }
 
             Section {

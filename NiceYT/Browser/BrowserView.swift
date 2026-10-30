@@ -12,6 +12,7 @@ enum BrowserSheet: String, Identifiable {
 struct BrowserScreen: View {
     @ObservedObject private var model = BrowserModel.shared
     @ObservedObject private var files = FileDownloads.shared
+    @ObservedObject private var library = BrowserLibrary.shared
     @EnvironmentObject private var player: PlayerModel
     @State private var sheet: BrowserSheet?
 
@@ -40,7 +41,7 @@ struct BrowserScreen: View {
                     .padding(.horizontal, 16).padding(.vertical, 10)
                     .glassEffect(.regular, in: .capsule)
                     .allowsHitTesting(false)
-            } else if files.runningCount > 0, let job = files.activeJobs.first(where: { !$0.failed }) {
+            } else if library.barPosition == .bottom, files.runningCount > 0, let job = files.activeJobs.first(where: { !$0.failed }) {
                 HStack(spacing: 10) {
                     ProgressRing(value: job.progress).frame(width: 18, height: 18)
                     Text(files.runningCount > 1 ? "\(files.runningCount) Downloads laufen" : job.name)
@@ -52,7 +53,8 @@ struct BrowserScreen: View {
                 .onTapGesture { sheet = .library }
             }
         }
-        .padding(.top, 4)
+        // Below the address bar when it's on top.
+        .padding(.top, library.barPosition == .top ? 62 : 4)
         .padding(.horizontal, 40)
         .transition(.move(edge: .top).combined(with: .opacity))
         .animation(.snappy, value: player.toast)
@@ -70,35 +72,128 @@ private struct BrowserTabView: View {
     @FocusState private var addressFocused: Bool
     @State private var address = ""
     @State private var remote: [String] = []
+    @ObservedObject private var files = FileDownloads.shared
+
+    @State private var selection: TextSelection?
+
+    /// Address bar on top (like Safari's "single tab" layout) with a toolbar below.
+    private var top: Bool { library.barPosition == .top }
 
     var body: some View {
-        ZStack {
-            BrowserWebView(webView: tab.webView)
-                .opacity(tab.showStart ? 0 : 1)
+        ZStack(alignment: .top) {
             if tab.showStart {
                 StartPage(tab: tab, sheet: $sheet)
-                    .transition(.opacity)
-            } else if let error = tab.loadError {
-                errorCard(error)
+                    .zIndex(1)
+            } else {
+                BrowserWebView(webView: tab.webView)
+                if let error = tab.loadError {
+                    errorCard(error)
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                        .zIndex(1)
+                }
             }
             if addressFocused {
-                Color.black.opacity(0.25)
+                Color.black.opacity(0.3)
                     .ignoresSafeArea()
                     .onTapGesture { addressFocused = false }
                     .transition(.opacity)
+                    .zIndex(2)
+                if top {
+                    suggestions
+                        .padding(.horizontal, 12)
+                        .padding(.top, 8)
+                        .transition(.move(edge: .top).combined(with: .opacity))
+                        .zIndex(3)
+                }
             }
         }
-        .safeAreaInset(edge: .bottom, spacing: 0) { bottomBar }
+        .safeAreaInset(edge: .top, spacing: 0) {
+            if top { topBar }
+        }
+        .safeAreaInset(edge: .bottom, spacing: 0) {
+            if top { toolbar } else { bottomBar }
+        }
         .animation(.snappy(duration: 0.25), value: addressFocused)
-        .animation(.snappy, value: tab.showStart)
         .onChange(of: addressFocused) { _, focused in
-            if focused { address = tab.showStart ? "" : (tab.url?.absoluteString ?? "") }
+            guard focused else { return }
+            address = tab.showStart ? "" : (tab.url?.absoluteString ?? "")
+            // Like Safari: the whole address is selected, typing replaces it.
+            DispatchQueue.main.async {
+                if !address.isEmpty { selection = TextSelection(range: address.startIndex..<address.endIndex) }
+            }
+        }
+        .onChange(of: model.focusRequest) {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) { addressFocused = true }
         }
         .task(id: address) { await loadSuggestions() }
     }
 
-    // MARK: Bar
+    // MARK: Bars
 
+    /// Address bar at the top.
+    private var topBar: some View {
+        VStack(spacing: 8) {
+            HStack(spacing: 8) {
+                addressPill
+                if addressFocused {
+                    Button("Abbrechen") { addressFocused = false }
+                        .font(.subheadline.weight(.semibold))
+                        .padding(.horizontal, 4)
+                        .transition(.move(edge: .trailing).combined(with: .opacity))
+                }
+            }
+            if let playing = tab.playing, !tab.showStart, !addressFocused {
+                playingPill(playing)
+                    .transition(.move(edge: .top).combined(with: .opacity))
+            }
+        }
+        .padding(.horizontal, 12)
+        .padding(.top, 4)
+        .padding(.bottom, 8)
+        .background {
+            if !tab.showStart {
+                Rectangle().fill(.bar).ignoresSafeArea(edges: .top)
+            }
+        }
+    }
+
+    /// Toolbar at the bottom when the address bar is on top.
+    @ViewBuilder private var toolbar: some View {
+        if !addressFocused {
+            GlassEffectContainer {
+                HStack(spacing: 0) {
+                    roundButton("xmark", label: "Browser schließen") { model.isPresented = false }
+                    Spacer(minLength: 0)
+                    backButton
+                    Spacer(minLength: 0)
+                    roundButton("chevron.forward", label: "Vorwärts", disabled: !tab.canGoForward && !(tab.showStart && tab.url != nil)) {
+                        tab.goForward()
+                    }
+                    Spacer(minLength: 0)
+                    assistantButton
+                    Spacer(minLength: 0)
+                    roundButton("book", label: "Lesezeichen") { sheet = .bookmarks }
+                        .contextMenu {
+                            Button("Lesezeichen", systemImage: "book") { sheet = .bookmarks }
+                            Button("Verlauf", systemImage: "clock") { sheet = .history }
+                            Button("Mediathek", systemImage: "square.stack.fill") { sheet = .library }
+                        }
+                    Spacer(minLength: 0)
+                    tabsButton
+                    Spacer(minLength: 0)
+                    menuButton
+                }
+                .padding(.horizontal, 6)
+                .glassEffect(.regular, in: .capsule)
+            }
+            .padding(.horizontal, 12)
+            .padding(.top, 6)
+            .padding(.bottom, 2)
+            .transition(.move(edge: .bottom).combined(with: .opacity))
+        }
+    }
+
+    /// Everything at the bottom (address bar included).
     private var bottomBar: some View {
         VStack(spacing: 8) {
             if addressFocused {
@@ -112,17 +207,7 @@ private struct BrowserTabView: View {
                 HStack(spacing: 8) {
                     if !addressFocused {
                         roundButton("xmark", label: "Browser schließen") { model.isPresented = false }
-                        roundButton("chevron.backward", label: "Zurück", disabled: !tab.canGoBack && tab.showStart) { tab.goBack() }
-                            .contextMenu {
-                                if tab.canGoForward || (tab.showStart && tab.url != nil) {
-                                    Button("Vorwärts", systemImage: "chevron.forward") { tab.goForward() }
-                                }
-                                ForEach(Array(tab.webView.backForwardList.backList.reversed().prefix(10)), id: \.self) { item in
-                                    Button(item.title?.isEmpty == false ? item.title! : (item.url.host ?? item.url.absoluteString)) {
-                                        tab.webView.go(to: item)
-                                    }
-                                }
-                            }
+                        backButton
                     }
                     addressPill
                     if addressFocused {
@@ -147,6 +232,48 @@ private struct BrowserTabView: View {
         }
     }
 
+    private var backButton: some View {
+        roundButton("chevron.backward", label: "Zurück", disabled: !tab.canGoBack && tab.showStart) { tab.goBack() }
+            .contextMenu {
+                if tab.canGoForward || (tab.showStart && tab.url != nil) {
+                    Button("Vorwärts", systemImage: "chevron.forward") { tab.goForward() }
+                }
+                ForEach(Array(tab.webView.backForwardList.backList.reversed().prefix(10)), id: \.self) { item in
+                    Button(item.title?.isEmpty == false ? item.title! : (item.url.host ?? item.url.absoluteString)) {
+                        tab.webView.go(to: item)
+                    }
+                }
+            }
+    }
+
+    /// Download assistant in the bottom toolbar.
+    private var assistantButton: some View {
+        let count = tab.media.filter { $0.kind != .image }.count
+        let active = !tab.showStart && (count > 0 || tab.url.map { MediaSite($0) != .web } == true)
+        return Button {
+            if tab.showStart { sheet = .library } else { model.openAssistant(for: tab) }
+        } label: {
+            Image(systemName: active ? "arrow.down.circle.fill" : "arrow.down.circle")
+                .font(.title3.weight(.semibold))
+                .foregroundStyle(active ? Color.accentColor : Color.primary)
+                .symbolEffect(.bounce, value: count)
+                .frame(width: 46, height: 46)
+                .overlay(alignment: .topTrailing) {
+                    if count > 0 {
+                        Text("\(min(count, 99))")
+                            .font(.system(size: 9, weight: .heavy))
+                            .foregroundStyle(.white)
+                            .padding(.horizontal, 4).padding(.vertical, 1)
+                            .background(Color.red, in: .capsule)
+                            .offset(x: -4, y: 6)
+                    }
+                }
+                .contentShape(.rect)
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel(tab.showStart ? "Mediathek" : "Download-Assistent")
+    }
+
     private var displayText: String {
         if tab.showStart { return tab.isPrivate ? "Privat suchen oder Adresse" : "Suchen oder Adresse eingeben" }
         if let url = tab.url, let q = library.searchEngine.query(in: url) ?? SearchEngine.google.query(in: url) { return q }
@@ -155,9 +282,12 @@ private struct BrowserTabView: View {
 
     private var addressPill: some View {
         HStack(spacing: 8) {
-            if addressFocused {
-                Image(systemName: "magnifyingglass").font(.subheadline).foregroundStyle(.secondary)
-                TextField("Suchen oder Adresse eingeben", text: $address)
+            Image(systemName: addressFocused ? "magnifyingglass" : siteIcon)
+                .font(addressFocused ? .subheadline : .caption.weight(.semibold))
+                .foregroundStyle(tab.isPrivate && !addressFocused ? Color.purple : Color.secondary)
+            ZStack {
+                // The field stays in place (invisible while not editing) so a tap focuses it directly.
+                TextField("Suchen oder Adresse eingeben", text: $address, selection: $selection)
                     .focused($addressFocused)
                     .keyboardType(.webSearch)
                     .textInputAutocapitalization(.never)
@@ -165,30 +295,33 @@ private struct BrowserTabView: View {
                     .submitLabel(.go)
                     .font(.callout)
                     .onSubmit { go(address) }
+                    .opacity(addressFocused ? 1 : 0.02)
+                if !addressFocused {
+                    Text(displayText)
+                        .font(.subheadline.weight(tab.showStart ? .regular : .semibold))
+                        .foregroundStyle(tab.showStart ? .secondary : .primary)
+                        .lineLimit(1)
+                        .frame(maxWidth: .infinity)
+                        .allowsHitTesting(false)
+                }
+            }
+            if addressFocused {
                 if !address.isEmpty {
                     Button { address = "" } label: { Image(systemName: "xmark.circle.fill").foregroundStyle(.secondary) }
                         .buttonStyle(.plain)
                 }
-            } else {
-                Image(systemName: siteIcon)
-                    .font(.caption.weight(.semibold))
-                    .foregroundStyle(tab.isPrivate ? Color.purple : Color.secondary)
-                Text(displayText)
-                    .font(.subheadline.weight(tab.showStart ? .regular : .semibold))
-                    .foregroundStyle(tab.showStart ? .secondary : .primary)
-                    .lineLimit(1)
-                    .frame(maxWidth: .infinity)
-                if !tab.showStart {
-                    downloadButton
-                    Button { tab.reload() } label: {
-                        Image(systemName: tab.isLoading ? "xmark" : "arrow.clockwise")
-                            .font(.footnote.weight(.semibold))
-                            .frame(width: 28, height: 34)
-                            .contentTransition(.symbolEffect(.replace))
-                    }
-                    .buttonStyle(.plain)
-                    .accessibilityLabel(tab.isLoading ? "Laden stoppen" : "Neu laden")
+            } else if !tab.showStart {
+                if !top || files.runningCount > 0 { downloadButton }
+                Button { tab.reload() } label: {
+                    Image(systemName: tab.isLoading ? "xmark" : "arrow.clockwise")
+                        .font(.footnote.weight(.semibold))
+                        .frame(width: 28, height: 34)
+                        .contentTransition(.symbolEffect(.replace))
                 }
+                .buttonStyle(.plain)
+                .accessibilityLabel(tab.isLoading ? "Laden stoppen" : "Neu laden")
+            } else if files.runningCount > 0 {
+                downloadButton
             }
         }
         .padding(.leading, 14)
@@ -218,25 +351,39 @@ private struct BrowserTabView: View {
     private var downloadButton: some View {
         let count = tab.media.filter { $0.kind != .image }.count
         let supported = tab.url.map { MediaSite($0) != .web } ?? false
-        return Button { model.openAssistant(for: tab) } label: {
-            Image(systemName: count > 0 || supported ? "arrow.down.circle.fill" : "arrow.down.circle")
-                .font(.body.weight(.semibold))
-                .foregroundStyle(count > 0 || supported ? Color.accentColor : Color.secondary)
-                .symbolEffect(.bounce, value: count)
-                .frame(width: 32, height: 34)
-                .overlay(alignment: .topTrailing) {
-                    if count > 0 {
-                        Text("\(min(count, 99))")
-                            .font(.system(size: 9, weight: .heavy))
-                            .foregroundStyle(.white)
-                            .padding(.horizontal, 4).padding(.vertical, 1)
-                            .background(Color.red, in: .capsule)
-                            .offset(x: 2, y: 2)
+        let running = files.activeJobs.filter { !$0.failed }
+        return Button {
+            if !running.isEmpty { sheet = .library } else { model.openAssistant(for: tab) }
+        } label: {
+            Group {
+                if let job = running.first {
+                    ZStack {
+                        ProgressRing(value: running.count == 1 ? job.progress : running.map(\.progress).reduce(0, +) / Double(running.count))
+                            .frame(width: 20, height: 20)
+                        Image(systemName: "arrow.down").font(.system(size: 9, weight: .heavy)).foregroundStyle(.tint)
                     }
+                } else {
+                    Image(systemName: count > 0 || supported ? "arrow.down.circle.fill" : "arrow.down.circle")
+                        .font(.body.weight(.semibold))
+                        .foregroundStyle(count > 0 || supported ? Color.accentColor : Color.secondary)
+                        .symbolEffect(.bounce, value: count)
                 }
+            }
+            .frame(width: 32, height: 34)
+            .overlay(alignment: .topTrailing) {
+                let badge = running.isEmpty ? count : running.count
+                if badge > 0, running.isEmpty || running.count > 1 {
+                    Text("\(min(badge, 99))")
+                        .font(.system(size: 9, weight: .heavy))
+                        .foregroundStyle(.white)
+                        .padding(.horizontal, 4).padding(.vertical, 1)
+                        .background(running.isEmpty ? Color.red : Color.accentColor, in: .capsule)
+                        .offset(x: 2, y: 2)
+                }
+            }
         }
         .buttonStyle(.plain)
-        .accessibilityLabel("Download-Assistent")
+        .accessibilityLabel(running.isEmpty ? "Download-Assistent" : "Downloads")
     }
 
     private func roundButton(_ icon: String, label: String, disabled: Bool = false, action: @escaping () -> Void) -> some View {
@@ -250,7 +397,7 @@ private struct BrowserTabView: View {
                 .contentShape(.circle)
         }
         .buttonStyle(.plain)
-        .glassEffect(.regular.interactive(), in: .circle)
+        .glassCircle(!top)
         .disabled(disabled)
         .opacity(disabled ? 0.4 : 1)
         .accessibilityLabel(label)
@@ -269,7 +416,7 @@ private struct BrowserTabView: View {
             .contentShape(.circle)
         }
         .buttonStyle(.plain)
-        .glassEffect(.regular.interactive(), in: .circle)
+        .glassCircle(!top)
         .accessibilityLabel("Tabs")
         .contextMenu {
             Button("Neuer Tab", systemImage: "plus.square.on.square") { model.newTab(isPrivate: false) }
@@ -344,7 +491,7 @@ private struct BrowserTabView: View {
         }
         .menuOrder(.priority)
         .buttonStyle(.plain)
-        .glassEffect(.regular.interactive(), in: .circle)
+        .glassCircle(!top)
         .accessibilityLabel("Mehr")
     }
 
@@ -927,5 +1074,12 @@ private struct TabCard: View {
                 Button("Link kopieren", systemImage: "link") { UIPasteboard.general.url = url }
             }
         }
+    }
+}
+
+extension View {
+    /// Interactive glass circle behind a free-standing bar button.
+    @ViewBuilder func glassCircle(_ on: Bool) -> some View {
+        if on { glassEffect(.regular.interactive(), in: .circle) } else { self }
     }
 }

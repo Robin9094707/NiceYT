@@ -212,6 +212,8 @@ final class BrowserModel: NSObject, ObservableObject, WKNavigationDelegate, WKUI
     @Published private(set) var tabs: [BrowserTab] = []
     @Published private(set) var selectedID: UUID?
     @Published var showTabs = false
+    /// Bumped when a fresh tab wants the keyboard in its address bar.
+    @Published private(set) var focusRequest = 0
     /// Media opened in the native player sheet.
     @Published var nativeMedia: NativeMediaItem?
 
@@ -295,6 +297,7 @@ final class BrowserModel: NSObject, ObservableObject, WKNavigationDelegate, WKUI
         }
         if let url { tab.load(url) }
         if shouldSelect { select(tab) }
+        if url == nil, configuration == nil, shouldSelect { focusRequest += 1 }
         scheduleTabSave()
         return tab
     }

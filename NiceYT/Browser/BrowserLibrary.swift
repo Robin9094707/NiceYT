@@ -74,6 +74,13 @@ enum SearchEngine: String, CaseIterable, Identifiable {
     }
 }
 
+/// Where the address bar sits.
+enum BarPosition: String, CaseIterable, Identifiable {
+    case top, bottom
+    var id: String { rawValue }
+    var label: String { self == .top ? "Oben" : "Unten" }
+}
+
 /// Bookmarks, history and browser preferences (persisted on the device).
 @MainActor
 final class BrowserLibrary: ObservableObject {
@@ -84,6 +91,7 @@ final class BrowserLibrary: ObservableObject {
     @Published private(set) var history: [HistoryEntry] = []
 
     @Published var searchEngine: SearchEngine { didSet { d.set(searchEngine.rawValue, forKey: "searchEngine") } }
+    @Published var barPosition: BarPosition { didSet { d.set(barPosition.rawValue, forKey: "barPosition") } }
     @Published var adBlock: Bool { didSet { d.set(adBlock, forKey: "adBlock"); BrowserModel.shared.updateContentBlocking() } }
     /// Sites on which the ad blocker is switched off.
     @Published var adBlockExceptions: Set<String> {
@@ -125,6 +133,7 @@ final class BrowserLibrary: ObservableObject {
     private init() {
         d.register(defaults: [
             "searchEngine": SearchEngine.google.rawValue,
+            "barPosition": BarPosition.top.rawValue,
             "adBlock": true,
             "mediaButtons": true,
             "cleanSocial": true,
@@ -134,6 +143,7 @@ final class BrowserLibrary: ObservableObject {
             "restoreTabs": true
         ])
         searchEngine = SearchEngine(rawValue: d.string(forKey: "searchEngine") ?? "") ?? .google
+        barPosition = BarPosition(rawValue: d.string(forKey: "barPosition") ?? "") ?? .top
         adBlock = d.bool(forKey: "adBlock")
         adBlockExceptions = Set(d.stringArray(forKey: "adBlockExceptions") ?? [])
         mediaButtons = d.bool(forKey: "mediaButtons")

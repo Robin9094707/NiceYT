@@ -1,0 +1,75 @@
+name: UI screenshots
+
+# Builds Nova for the simulator with test scenarios and takes screenshots
+# (browser, new tab, tab overview, download assistant) – for checking the UI.
+on:
+  workflow_dispatch:
+
+jobs:
+  screenshots:
+    runs-on: macos-26
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Select newest stable Xcode
+        run: |
+          XC=$(ls -d /Applications/Xcode_*.app | grep -viE 'beta|rc' | sort -V | tail -1)
+          sudo xcode-select -s "$XC/Contents/Developer"
+          xcodebuild -version
+
+      - name: Generate project
+        run: brew install xcodegen && xcodegen generate
+
+      - name: Build for the simulator
+        run: |
+          set -o pipefail
+          xcodebuild -project NiceYT.xcodeproj -scheme NiceYT -configuration Release \
+            -sdk iphonesimulator -destination 'generic/platform=iOS Simulator' -derivedDataPath build \
+            CODE_SIGNING_ALLOWED=NO 'OTHER_SWIFT_FLAGS=$(inherited) -DNOVA_SCREENSHOTS' \
+            build 2>&1 | tee build.log | grep -E "error:|BUILD (SUCCEEDED|FAILED)" || true
+          grep -q "BUILD SUCCEEDED" build.log
+
+      - name: Boot simulator
+        run: |
+          UDID=$(xcrun simctl list devices available -j | python3 -c "
+          import json, sys
+          d = json.load(sys.stdin)['devices']
+          c = [x for k, v in d.items() if 'iOS-26' in k for x in v if x['name'].startswith('iPhone')]
+          pro = [x for x in c if 'Pro' in x['name'] and 'Max' not in x['name']]
+          print(sorted(pro or c, key=lambda x: x['name'])[-1]['udid'])")
+          echo "UDID=$UDID" >> "$GITHUB_ENV"
+          xcrun simctl boot "$UDID"
+          xcrun simctl bootstatus "$UDID" -b
+          xcrun simctl ui "$UDID" appearance dark
+          xcrun simctl install "$UDID" build/Build/Products/Release-iphonesimulator/NiceYT.app
+
+      - name: Screenshots
+        run: |
+          mkdir -p shots
+          shot() {
+            local file=$1 scenario=$2 bar=$3 url=$4 wait=$5
+            xcrun simctl terminate "$UDID" com.robin.niceyt || true
+            SIMCTL_CHILD_NOVA_SCENARIO="$scenario" SIMCTL_CHILD_NOVA_BAR="$bar" SIMCTL_CHILD_NOVA_URL="$url" \
+              xcrun simctl launch "$UDID" com.robin.niceyt
+            sleep "$wait"
+            xcrun simctl io "$UDID" screenshot "shots/$file.png"
+          }
+          shot 01-start-top      start     top    ""                                                                  10
+          shot 02-page-top       page      top    "https://de.wikipedia.org"                                          14
+          shot 03-newtab-top     newtab    top    "https://de.wikipedia.org"                                          16
+          shot 04-tabs-top       tabs      top    "https://de.wikipedia.org"                                          20
+          shot 05-page-bottom    page      bottom "https://de.wikipedia.org"                                          14
+          shot 06-newtab-bottom  newtab    bottom "https://de.wikipedia.org"                                          16
+          shot 07-tiktok         assistant top    "https://www.tiktok.com/@scout2015/video/6718335390845095173"       25
+          shot 08-instagram      assistant top    "https://www.instagram.com/p/aye83DjauH/"                           25
+          shot 09-reddit         assistant top    "https://www.reddit.com/r/videos/comments/6rrwyj/that_small_heart_attack/" 25
+          xcrun simctl spawn "$UDID" log show --last 5m --predicate 'process == "NiceYT"' --style compact > shots/log.txt 2>/dev/null || true
+          ls -la shots
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: screenshots
+          path: shots
+          retention-days: 7

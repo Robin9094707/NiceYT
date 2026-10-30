@@ -165,6 +165,9 @@ struct RootView: View {
     }
 
     private func startUp() async {
+        #if NOVA_SCREENSHOTS
+        ScreenshotScenario.run()
+        #endif
         // Prepare the signature/n solver in the background so the first video starts fast.
         Task.detached(priority: .utility) { await NSolver.shared.prewarm() }
         YouTubeDownloads.shared.onToast = { [player] text in player.showToast(text) }
