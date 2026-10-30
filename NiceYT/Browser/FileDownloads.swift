@@ -1,0 +1,389 @@
+import AVFoundation
+import SwiftUI
+import UniformTypeIdentifiers
+import WebKit
+
+struct SavedFile: Identifiable, Codable, Hashable, Sendable {
+    let id: String
+    var name: String
+    var fileName: String
+    var source: String
+    var page: String?
+    var size: Int64
+    var date: Date
+
+    var url: URL { FileDownloads.folder.appendingPathComponent(fileName) }
+    var kind: MediaKind { MediaKind(fileExtension: (fileName as NSString).pathExtension) }
+}
+
+enum MediaKind: String, Codable, Sendable {
+    case video, audio, stream, image, file
+
+    init(fileExtension ext: String) {
+        switch ext.lowercased() {
+        case "mp4", "mov", "m4v", "webm", "mkv", "ts", "3gp": self = .video
+        case "mp3", "m4a", "aac", "wav", "flac", "ogg", "opus": self = .audio
+        case "m3u8", "mpd": self = .stream
+        case "jpg", "jpeg", "png", "gif", "webp", "heic": self = .image
+        default: self = .file
+        }
+    }
+
+    var icon: String {
+        switch self {
+        case .video: return "film"
+        case .audio: return "waveform"
+        case .stream: return "dot.radiowaves.left.and.right"
+        case .image: return "photo"
+        case .file: return "doc"
+        }
+    }
+
+    var label: String {
+        switch self {
+        case .video: return "Video"
+        case .audio: return "Audio"
+        case .stream: return "Stream"
+        case .image: return "Bild"
+        case .file: return "Datei"
+        }
+    }
+}
+
+/// Downloads of the browser / universal downloader (Documents/Downloads).
+@MainActor
+final class FileDownloads: ObservableObject {
+    static let shared = FileDownloads()
+
+    struct Job: Identifiable {
+        let id: String
+        var name: String
+        var progress: Double = 0
+        var status = "Wird geladen …"
+        var failed = false
+        let source: URL
+    }
+
+    @Published private(set) var files: [SavedFile] = []
+    @Published private(set) var jobs: [String: Job] = [:]
+    var onToast: ((String) -> Void)?
+    private var tasks: [String: Task<Void, Never>] = [:]
+
+    nonisolated static var folder: URL {
+        let docs = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
+        let dir = docs.appendingPathComponent("Downloads", isDirectory: true)
+        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        return dir
+    }
+
+    private static var indexURL: URL {
+        let support = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+        try? FileManager.default.createDirectory(at: support, withIntermediateDirectories: true)
+        return support.appendingPathComponent("fileDownloads.json")
+    }
+
+    private init() {
+        if let data = try? Data(contentsOf: Self.indexURL),
+           let list = try? JSONDecoder().decode([SavedFile].self, from: data) {
+            files = list.filter { FileManager.default.fileExists(atPath: $0.url.path) }
+        }
+    }
+
+    var activeJobs: [Job] { jobs.values.sorted { $0.id < $1.id } }
+    var totalSize: Int64 { files.reduce(0) { $0 + $1.size } }
+
+    // MARK: Starting
+
+    /// Downloads `url` with the browser's cookies (needed by TikTok, Instagram …).
+    func download(_ url: URL, name: String? = nil, page: URL? = nil, userAgent: String = BrowserModel.mobileUA) {
+        let id = UUID().uuidString
+        let display = name ?? Self.displayName(for: url)
+        jobs[id] = Job(id: id, name: display, source: url)
+        Haptics.success()
+        onToast?("Download gestartet")
+        tasks[id] = Task { await run(id, url: url, name: name, page: page, userAgent: userAgent) }
+    }
+
+    func cancel(_ id: String) {
+        tasks[id]?.cancel()
+        tasks[id] = nil
+        jobs[id] = nil
+    }
+
+    /// A file that WebKit downloaded itself (links, form posts).
+    func register(_ file: URL, name: String, source: URL?, page: URL?) {
+        let target = Self.uniqueURL(for: name)
+        try? FileManager.default.moveItem(at: file, to: target)
+        add(target, name: name, source: source?.absoluteString ?? "", page: page)
+    }
+
+    private func add(_ file: URL, name: String, source: String, page: URL?) {
+        let size = ((try? FileManager.default.attributesOfItem(atPath: file.path))?[.size] as? NSNumber)?.int64Value ?? 0
+        files.insert(SavedFile(id: UUID().uuidString, name: name, fileName: file.lastPathComponent, source: source,
+                               page: page?.absoluteString, size: size, date: Date()), at: 0)
+        save()
+        Haptics.success()
+        onToast?("„\(name)“ gespeichert")
+    }
+
+    // MARK: Downloads run by WebKit
+
+    func startExternal(name: String, source: URL?) -> String {
+        let id = UUID().uuidString
+        jobs[id] = Job(id: id, name: name, source: source ?? URL(string: "about:blank")!)
+        Haptics.success()
+        onToast?("Download gestartet")
+        return id
+    }
+
+    func updateExternal(_ id: String, progress: Double) {
+        update(id, progress: min(0.99, progress))
+    }
+
+    func finishExternal(_ id: String, file: URL, name: String, source: URL?, page: URL?) {
+        jobs[id] = nil
+        register(file, name: name, source: source, page: page)
+    }
+
+    func failExternal(_ id: String, error: Error) {
+        update(id, status: "Fehlgeschlagen: \(error.localizedDescription)")
+        jobs[id]?.failed = true
+        Haptics.error()
+    }
+
+    func delete(_ id: String) {
+        guard let f = files.first(where: { $0.id == id }) else { return }
+        try? FileManager.default.removeItem(at: f.url)
+        files.removeAll { $0.id == id }
+        save()
+    }
+
+    func deleteAll() {
+        tasks.values.forEach { $0.cancel() }
+        tasks = [:]
+        jobs = [:]
+        for f in files { try? FileManager.default.removeItem(at: f.url) }
+        files = []
+        save()
+    }
+
+    private func save() {
+        if let data = try? JSONEncoder().encode(files) { try? data.write(to: Self.indexURL, options: .atomic) }
+    }
+
+    private func update(_ id: String, progress: Double? = nil, status: String? = nil) {
+        guard var job = jobs[id] else { return }
+        if let progress {
+            guard progress - job.progress > 0.005 || progress >= 1 else { return }
+            job.progress = progress
+        }
+        if let status { job.status = status }
+        jobs[id] = job
+    }
+
+    // MARK: Running
+
+    private func run(_ id: String, url: URL, name: String?, page: URL?, userAgent: String) async {
+        defer { tasks[id] = nil }
+        let headers = await BrowserModel.requestHeaders(for: url, page: page, userAgent: userAgent)
+        let report: @Sendable (Double) -> Void = { [weak self] p in
+            Task { @MainActor in self?.update(id, progress: min(0.98, p)) }
+        }
+        do {
+            let isHLS = url.pathExtension.lowercased() == "m3u8" || url.absoluteString.contains(".m3u8")
+            let result: (file: URL, name: String)
+            if isHLS {
+                update(id, status: "Stream wird geladen …")
+                result = try await HLSDownloader.download(url, headers: headers, name: name ?? Self.displayName(for: page ?? url),
+                                                          progress: report)
+            } else {
+                result = try await Self.fetch(url, headers: headers, name: name, progress: report)
+            }
+            try Task.checkCancellation()
+            let target = Self.uniqueURL(for: result.name)
+            try FileManager.default.moveItem(at: result.file, to: target)
+            jobs[id] = nil
+            add(target, name: result.name, source: url.absoluteString, page: page)
+        } catch is CancellationError {
+            jobs[id] = nil
+        } catch {
+            if Task.isCancelled { jobs[id] = nil; return }
+            DebugLog.log("⬇︎ Datei-Download fehlgeschlagen: \(error.localizedDescription)")
+            update(id, status: "Fehlgeschlagen: \(error.localizedDescription)")
+            jobs[id]?.failed = true
+            Haptics.error()
+        }
+    }
+
+    /// Plain HTTP download with progress; picks the file name from the response.
+    nonisolated static func fetch(_ url: URL, headers: [String: String], name: String?,
+                                  progress: @escaping @Sendable (Double) -> Void) async throws -> (file: URL, name: String) {
+        var req = URLRequest(url: url, timeoutInterval: 60)
+        for (k, v) in headers { req.setValue(v, forHTTPHeaderField: k) }
+        let delegate = DownloadProgress(progress)
+        let (temp, response) = try await URLSession.shared.download(for: req, delegate: delegate)
+        let status = (response as? HTTPURLResponse)?.statusCode ?? 200
+        guard (200..<300).contains(status) else { throw YTError.http(status) }
+        var fileName = name ?? response.suggestedFilename ?? url.lastPathComponent
+        if (fileName as NSString).pathExtension.isEmpty {
+            let ext = response.mimeType.flatMap { UTType(mimeType: $0)?.preferredFilenameExtension }
+                ?? (url.pathExtension.isEmpty ? "bin" : url.pathExtension)
+            fileName += "." + ext
+        }
+        let moved = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString + "-" + fileName)
+        try FileManager.default.moveItem(at: temp, to: moved)
+        return (moved, safe(fileName))
+    }
+
+    nonisolated static func displayName(for url: URL) -> String {
+        let last = url.deletingPathExtension().lastPathComponent
+        return last.isEmpty || last == "/" ? (url.host ?? "Datei") : last
+    }
+
+    nonisolated static func safe(_ name: String) -> String {
+        let illegal = CharacterSet(charactersIn: "/\\?%*|\"<>:").union(.newlines).union(.controlCharacters)
+        let clean = name.components(separatedBy: illegal).joined(separator: " ").trimmingCharacters(in: .whitespaces)
+        return String((clean.isEmpty ? "Datei" : clean).suffix(120))
+    }
+
+    nonisolated static func uniqueURL(for name: String) -> URL {
+        let base = (name as NSString).deletingPathExtension
+        let ext = (name as NSString).pathExtension
+        var candidate = folder.appendingPathComponent(name)
+        var n = 2
+        while FileManager.default.fileExists(atPath: candidate.path) {
+            candidate = folder.appendingPathComponent("\(base) (\(n))" + (ext.isEmpty ? "" : ".\(ext)"))
+            n += 1
+        }
+        return candidate
+    }
+}
+
+private final class DownloadProgress: NSObject, URLSessionTaskDelegate, @unchecked Sendable {
+    private let report: @Sendable (Double) -> Void
+    private var observation: NSKeyValueObservation?
+
+    init(_ report: @escaping @Sendable (Double) -> Void) { self.report = report }
+
+    func urlSession(_ session: URLSession, didCreateTask task: URLSessionTask) {
+        observation = task.progress.observe(\.fractionCompleted) { [report] p, _ in report(p.fractionCompleted) }
+    }
+}
+
+/// Downloads unencrypted HLS streams (fMP4 → MP4, MPEG-TS → .ts).
+enum HLSDownloader {
+    static func download(_ master: URL, headers: [String: String], name: String,
+                         progress: @escaping @Sendable (Double) -> Void) async throws -> (file: URL, name: String) {
+        let text = try await load(master, headers: headers)
+        let lines = text.components(separatedBy: "\n")
+        var videoPlaylist = master
+        var audioPlaylist: URL?
+        if text.contains("#EXT-X-STREAM-INF") {
+            var best: (bw: Int, url: URL, audio: String?)?
+            for (i, line) in lines.enumerated() where line.hasPrefix("#EXT-X-STREAM-INF") && i + 1 < lines.count {
+                guard let u = resolve(lines[i + 1], base: master) else { continue }
+                let bw = Int(StreamResolver.attribute("BANDWIDTH", in: line) ?? "") ?? 0
+                if best == nil || bw > best!.bw { best = (bw, u, StreamResolver.attribute("AUDIO", in: line)) }
+            }
+            guard let best else { throw YTError.invalidResponse }
+            videoPlaylist = best.url
+            if let group = best.audio {
+                var fallback: URL?
+                for line in lines where line.hasPrefix("#EXT-X-MEDIA") && line.contains("TYPE=AUDIO")
+                    && StreamResolver.attribute("GROUP-ID", in: line) == group {
+                    guard let uri = StreamResolver.attribute("URI", in: line), let u = resolve(uri, base: master) else { continue }
+                    if fallback == nil { fallback = u }
+                    if StreamResolver.attribute("DEFAULT", in: line) == "YES" { audioPlaylist = u; break }
+                }
+                audioPlaylist = audioPlaylist ?? fallback
+            }
+        }
+        let dir = FileManager.default.temporaryDirectory.appendingPathComponent("hls-" + UUID().uuidString, isDirectory: true)
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        let videoShare = audioPlaylist == nil ? 1.0 : 0.85
+        let video = try await fetchPlaylist(videoPlaylist, headers: headers, into: dir.appendingPathComponent("video")) {
+            progress($0 * videoShare)
+        }
+        var audio: (URL, Bool)?
+        if let audioPlaylist {
+            audio = try await fetchPlaylist(audioPlaylist, headers: headers, into: dir.appendingPathComponent("audio")) {
+                progress(videoShare + $0 * (1 - videoShare))
+            }
+        }
+        let base = FileDownloads.safe(name)
+        if video.fmp4 {
+            let out = dir.appendingPathComponent("out.mp4")
+            try await YouTubeDownloader.export(video: video.file, audio: audio?.0 ?? video.file, to: out, fileType: .mp4, metadata: [])
+            return (out, base + ".mp4")
+        }
+        // MPEG-TS can't be remuxed on iOS without re-encoding – keep it as .ts (VLC, Infuse …).
+        return (video.file, base + ".ts")
+    }
+
+    private static func fetchPlaylist(_ url: URL, headers: [String: String], into file: URL,
+                                      progress: @escaping @Sendable (Double) -> Void) async throws -> (file: URL, fmp4: Bool) {
+        let text = try await load(url, headers: headers)
+        if let key = text.components(separatedBy: "\n").first(where: { $0.hasPrefix("#EXT-X-KEY") }),
+           StreamResolver.attribute("METHOD", in: key) != "NONE" {
+            throw YTError.unplayable("Dieser Stream ist verschlüsselt (DRM) und kann nicht gespeichert werden.")
+        }
+        var segments: [URL] = []
+        var fmp4 = false
+        for line in text.components(separatedBy: "\n") {
+            let t = line.trimmingCharacters(in: .whitespaces)
+            if t.hasPrefix("#EXT-X-MAP:"), let uri = StreamResolver.attribute("URI", in: t), let u = resolve(uri, base: url) {
+                segments.append(u)
+                fmp4 = true
+            } else if !t.isEmpty, !t.hasPrefix("#"), let u = resolve(t, base: url) {
+                segments.append(u)
+                if ["m4s", "mp4", "m4a", "m4v"].contains(u.pathExtension.lowercased()) { fmp4 = true }
+            }
+        }
+        guard !segments.isEmpty else { throw YTError.invalidResponse }
+        let out = file.appendingPathExtension(fmp4 ? "mp4" : "ts")
+        FileManager.default.createFile(atPath: out.path, contents: nil)
+        let handle = try FileHandle(forWritingTo: out)
+        defer { try? handle.close() }
+        let batch = 6
+        for start in stride(from: 0, to: segments.count, by: batch) {
+            try Task.checkCancellation()
+            let slice = Array(segments[start..<min(segments.count, start + batch)])
+            let parts = try await withThrowingTaskGroup(of: (Int, Data).self) { group in
+                for (i, u) in slice.enumerated() {
+                    group.addTask {
+                        var req = URLRequest(url: u, timeoutInterval: 30)
+                        for (k, v) in headers { req.setValue(v, forHTTPHeaderField: k) }
+                        let (data, response) = try await URLSession.shared.data(for: req)
+                        let status = (response as? HTTPURLResponse)?.statusCode ?? 200
+                        guard (200..<300).contains(status) else { throw YTError.http(status) }
+                        return (i, data)
+                    }
+                }
+                var out: [Int: Data] = [:]
+                for try await (i, d) in group { out[i] = d }
+                return out
+            }
+            for i in 0..<slice.count { if let d = parts[i] { try handle.write(contentsOf: d) } }
+            progress(Double(min(segments.count, start + batch)) / Double(segments.count))
+        }
+        return (out, fmp4)
+    }
+
+    private static func load(_ url: URL, headers: [String: String]) async throws -> String {
+        var req = URLRequest(url: url, timeoutInterval: 30)
+        for (k, v) in headers { req.setValue(v, forHTTPHeaderField: k) }
+        let (data, response) = try await URLSession.shared.data(for: req)
+        let status = (response as? HTTPURLResponse)?.statusCode ?? 200
+        guard (200..<300).contains(status) else { throw YTError.http(status) }
+        let text = String(data: data, encoding: .utf8) ?? ""
+        guard text.hasPrefix("#EXTM3U") else { throw YTError.unplayable("Keine gültige Stream-Playlist") }
+        return text
+    }
+
+    private static func resolve(_ s: String, base: URL) -> URL? {
+        let t = s.trimmingCharacters(in: .whitespaces)
+        guard !t.isEmpty else { return nil }
+        if t.hasPrefix("http") { return URL(string: t) }
+        return URL(string: t, relativeTo: base)?.absoluteURL
+    }
+}

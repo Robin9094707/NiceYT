@@ -14,6 +14,8 @@ struct RootView: View {
     @EnvironmentObject private var downloads: DownloadStore
     @ObservedObject private var musicRouter = MusicRouter.shared
     @ObservedObject private var ytDownloads = YouTubeDownloads.shared
+    @ObservedObject private var browser = BrowserModel.shared
+    @ObservedObject private var links = LinkRouter.shared
     @ObservedObject private var musicSearch = MusicSearchRequest.shared
     @Environment(\.scenePhase) private var scenePhase
     @State private var tab: AppTab = .home
@@ -37,8 +39,19 @@ struct RootView: View {
             }
         }
         .tabBarMinimizeBehavior(.onScrollDown)
-        .youTubeDownloadSheet(active: !player.isPresented)
-        .confirmations(active: !player.isPresented && !music.showNowPlaying && ytDownloads.request == nil)
+        .youTubeDownloadSheet(active: !player.isPresented && !browser.isPresented)
+        .confirmations(active: !player.isPresented && !music.showNowPlaying && ytDownloads.request == nil && !browser.isPresented)
+        .background {
+            Color.clear.fullScreenCover(isPresented: $browser.isPresented) {
+                BrowserScreen()
+                    .environmentObject(FileDownloads.shared)
+                    .environmentObject(YouTubeDownloads.shared)
+                    .environmentObject(player)
+                    .environmentObject(settings)
+                    .environmentObject(account)
+                    .tint(settings.accent.color)
+            }
+        }
         .modifier(MiniPlayerAccessory(enabled: (player.current != nil || music.current != nil) && tab != .shorts))
         .sheet(isPresented: $music.showNowPlaying) {
             NowPlayingView()
@@ -96,19 +109,50 @@ struct RootView: View {
             updateShorts()
         }
         .onChange(of: scenePhase) { _, phase in
-            if phase == .active { updateShorts() }
+            if phase == .active {
+                updateShorts()
+                LinkRouter.shared.checkClipboard()
+            }
         }
-        .onOpenURL { url in
-            if let id = YouTubeLink.videoId(from: url.absoluteString) {
-                player.play(Video(id: id, title: ""))
-            } else if let route = DeezerLink.route(from: url.absoluteString) {
-                MusicRouter.shared.open(route)
+        .onOpenURL { url in LinkRouter.shared.handle(scheme: url) }
+        .onChange(of: links.playRequest) { _, video in
+            guard let video else { return }
+            links.playRequest = nil
+            if video.isShort {
+                shorts.open(video, from: [video])
+            } else {
+                player.play(video)
+            }
+        }
+        .overlay(alignment: .bottom) {
+            if links.clipboardHasLink, !browser.isPresented, !player.isPresented {
+                HStack(spacing: 12) {
+                    Image(systemName: "link.badge.plus").font(.title3).foregroundStyle(.tint)
+                    VStack(alignment: .leading, spacing: 1) {
+                        Text("Link in der Zwischenablage").font(.subheadline.weight(.semibold))
+                        Text("In NicePlay öffnen oder herunterladen").font(.caption).foregroundStyle(.secondary)
+                    }
+                    Spacer(minLength: 4)
+                    Button("Öffnen") { links.openClipboard() }
+                        .buttonStyle(.glassProminent)
+                        .font(.subheadline.weight(.semibold))
+                    Button { links.dismissClipboard() } label: { Image(systemName: "xmark").font(.caption.weight(.bold)) }
+                        .buttonStyle(.plain)
+                        .foregroundStyle(.secondary)
+                }
+                .padding(12)
+                .glassEffect(.regular, in: .rect(cornerRadius: 22))
+                .padding(.horizontal, 12)
+                .padding(.bottom, 120)
+                .transition(.move(edge: .bottom).combined(with: .opacity))
             }
         }
         .task {
             // Prepare the signature/n solver in the background so the first video starts fast.
             Task.detached(priority: .utility) { await NSolver.shared.prewarm() }
             YouTubeDownloads.shared.onToast = { [player] text in player.showToast(text) }
+            FileDownloads.shared.onToast = { [player] text in player.showToast(text) }
+            LinkRouter.shared.checkClipboard()
             // Music starting stops videos and Shorts.
             music.onStart = { [player] in
                 player.player.pause()
@@ -149,13 +193,18 @@ enum YouTubeLink {
     /// Extracts a video id from watch, short, embed, live and youtu.be links (or niceyt:// links).
     static func videoId(from text: String) -> String? {
         let s = text.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard let comps = URLComponents(string: s), let host = comps.host?.lowercased() ?? (comps.scheme == "niceyt" ? "niceyt" : nil) else {
+        if s.lowercased().hasPrefix("vnd.youtube:") {
+            let id = String(s.dropFirst("vnd.youtube:".count)).trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+            if id.count == 11 { return id }
+        }
+        guard let comps = URLComponents(string: s),
+              let host = comps.host?.lowercased() ?? (["niceyt", "youtube"].contains(comps.scheme ?? "") ? "niceyt" : nil) else {
             return nil
         }
         if let v = comps.queryItems?.first(where: { $0.name == "v" })?.value, v.count == 11 { return v }
         let parts = comps.path.split(separator: "/").map(String.init)
         if host.contains("youtu.be"), let first = parts.first, first.count == 11 { return first }
-        if host.contains("youtube.com") || host == "niceyt" {
+        if host.contains("youtube.com") || host == "niceyt" || comps.scheme == "youtube" {
             if parts.count >= 2, ["shorts", "embed", "live", "v", "watch"].contains(parts[0]), parts[1].count == 11 {
                 return parts[1]
             }

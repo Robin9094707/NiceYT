@@ -63,7 +63,7 @@ enum FileSaver {
         }
     }
 
-    /// Adds a video to the photo library (asks for permission the first time).
+    /// Adds a video or picture to the photo library (asks for permission the first time).
     static func saveToPhotos(_ url: URL, toast: @escaping (String) -> Void) {
         Task {
             let status = await PHPhotoLibrary.requestAuthorization(for: .addOnly)
@@ -74,7 +74,11 @@ enum FileSaver {
             }
             do {
                 try await PHPhotoLibrary.shared().performChanges {
-                    PHAssetCreationRequest.creationRequestForAssetFromVideo(atFileURL: url)
+                    if ["jpg", "jpeg", "png", "gif", "heic", "webp"].contains(url.pathExtension.lowercased()) {
+                        PHAssetCreationRequest.creationRequestForAssetFromImage(atFileURL: url)
+                    } else {
+                        PHAssetCreationRequest.creationRequestForAssetFromVideo(atFileURL: url)
+                    }
                 }
                 Haptics.success()
                 toast("In Fotos gesichert")

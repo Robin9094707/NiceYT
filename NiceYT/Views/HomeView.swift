@@ -88,6 +88,10 @@ struct HomeView: View {
                     Button { showAccount = true } label: { Image(systemName: "gearshape") }
                         .accessibilityLabel("Einstellungen")
                 }
+                ToolbarItem(placement: .topBarTrailing) {
+                    Button { BrowserModel.shared.open(nil) } label: { Image(systemName: "arrow.down.app") }
+                        .accessibilityLabel("Downloader & Browser")
+                }
                 ToolbarItem(placement: .topBarTrailing) { LibraryButton() }
             }
             .sheet(isPresented: $showAccount) { SettingsView() }

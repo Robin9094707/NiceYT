@@ -11,6 +11,7 @@ struct NiceYTApp: App {
     @StateObject private var musicStore = MusicStore.shared
     @StateObject private var downloads = DownloadStore.shared
     @StateObject private var ytDownloads = YouTubeDownloads.shared
+    @StateObject private var fileDownloads = FileDownloads.shared
 
     init() {
         URLCache.shared = URLCache(memoryCapacity: 96 * 1024 * 1024, diskCapacity: 512 * 1024 * 1024)
@@ -27,6 +28,7 @@ struct NiceYTApp: App {
                 .environmentObject(musicStore)
                 .environmentObject(downloads)
                 .environmentObject(ytDownloads)
+                .environmentObject(fileDownloads)
         }
     }
 }

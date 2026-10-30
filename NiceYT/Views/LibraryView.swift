@@ -26,7 +26,21 @@ struct LibraryView: View {
                         .padding(.top, 30)
                 }
                 GlassEffectContainer(spacing: 12) {
-                    LibraryRow(title: "Downloads", icon: "arrow.down.circle.fill", route: .downloads)
+                    VStack(spacing: 12) {
+                        Button { BrowserModel.shared.open(nil) } label: {
+                            HStack(spacing: 14) {
+                                Image(systemName: "arrow.down.app.fill").font(.title3).foregroundStyle(.tint).frame(width: 32)
+                                Text("Downloader & Browser").font(.body.weight(.medium))
+                                Spacer()
+                                Image(systemName: "chevron.right").font(.caption.weight(.bold)).foregroundStyle(.tertiary)
+                            }
+                            .padding(16)
+                            .glassEffect(.regular.interactive(), in: .rect(cornerRadius: 20))
+                        }
+                        .buttonStyle(.plain)
+                        LibraryRow(title: "Video-Downloads", icon: "arrow.down.circle.fill", route: .downloads)
+                        LibraryRow(title: "Datei-Downloads", icon: "tray.and.arrow.down.fill", route: .fileDownloads)
+                    }
                 }
                 featureCard
             }

@@ -12,6 +12,7 @@ enum Route: Hashable {
     case subscriptionsList
     case library
     case downloads
+    case fileDownloads
 }
 
 struct RouteDestination: View {
@@ -28,6 +29,7 @@ struct RouteDestination: View {
         case .subscriptionsList: SubscribedChannelsView()
         case .library: LibraryView()
         case .downloads: DownloadedVideosView()
+        case .fileDownloads: FileDownloadsView()
         }
     }
 }

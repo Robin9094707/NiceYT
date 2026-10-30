@@ -106,6 +106,11 @@ struct SearchView: View {
             player.play(Video(id: id, title: ""))
             return
         }
+        // Any other link: Deezer/Spotify into music, everything else into the downloader.
+        if let url = BrowserModel.url(from: q), q.contains("/") || q.hasPrefix("http") {
+            LinkRouter.shared.open(url)
+            return
+        }
         text = q
         submitted = q
         history.removeAll { $0.caseInsensitiveCompare(q) == .orderedSame }

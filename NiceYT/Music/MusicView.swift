@@ -12,6 +12,7 @@ struct MusicView: View {
     @State private var query = ""
     @State private var results = DZSearchResult()
     @State private var spResults = SPSearchResult()
+    @State private var ytResults: [DZTrack] = []
     @State private var isSearching = false
     @State private var scope: SearchScope = .all
     @State private var searchSource: SearchSource = .deezer
@@ -35,29 +36,41 @@ struct MusicView: View {
     }
 
     enum SearchSource: String, CaseIterable, Identifiable {
-        case deezer, spotify
+        case deezer, spotify, youtubeMusic
         var id: String { rawValue }
-        var title: String { self == .deezer ? "Deezer" : "Spotify" }
+        var title: String {
+            switch self {
+            case .deezer: return "Deezer"
+            case .spotify: return "Spotify"
+            case .youtubeMusic: return "YT Music"
+            }
+        }
     }
 
-    /// Search goes to Spotify when only Spotify is connected (or chosen).
+    /// Sources that can be searched right now (YouTube Music always).
+    private var availableSources: [SearchSource] {
+        var out: [SearchSource] = []
+        if store.user != nil { out.append(.deezer) }
+        if store.spotifyUser != nil { out.append(.spotify) }
+        out.append(.youtubeMusic)
+        return out
+    }
+
     private var effectiveSource: SearchSource {
-        if store.user == nil { return .spotify }
-        if store.spotifyUser == nil { return .deezer }
-        return searchSource
+        availableSources.contains(searchSource) ? searchSource : availableSources[0]
     }
 
     var body: some View {
         NavigationStack(path: $router.path) {
             Group {
-                if !store.hasAnySource {
+                if !query.trimmingCharacters(in: .whitespaces).isEmpty {
+                    searchResults
+                } else if !store.hasAnySource {
                     if store.isRestoring {
                         ProgressView("Verbinde …").frame(maxWidth: .infinity, maxHeight: .infinity)
                     } else {
                         welcome
                     }
-                } else if !query.trimmingCharacters(in: .whitespaces).isEmpty {
-                    searchResults
                 } else {
                     home
                 }
@@ -65,7 +78,7 @@ struct MusicView: View {
             .navigationTitle("Musik")
             .toolbar { ToolbarItem(placement: .topBarTrailing) { accountMenu } }
             .navigationDestination(for: MusicRoute.self) { MusicRouteView(route: $0) }
-            .modifier(MusicSearchable(enabled: store.hasAnySource, query: $query))
+            .modifier(MusicSearchable(enabled: true, query: $query))
             .task(id: "\(query)|\(effectiveSource.rawValue)") { await search() }
             .confirmationDialog("Von Deezer abmelden?", isPresented: $confirmLogout, titleVisibility: .visible) {
                 Button("Abmelden", role: .destructive) { Task { await store.logout() } }
@@ -166,7 +179,7 @@ struct MusicView: View {
                         .frame(width: 104, height: 104)
                         .glassEffect(.regular, in: .circle)
                     Text("Deine Musik").font(.title.weight(.bold))
-                    Text("Verbinde Deezer, Spotify oder beides. Deine Downloads kannst du jederzeit auch ohne Konto hören.")
+                    Text("Verbinde Deezer, Spotify oder beides – oder such einfach oben: YouTube Music funktioniert ganz ohne Konto. Deine Downloads kannst du jederzeit hören.")
                         .font(.callout)
                         .foregroundStyle(.secondary)
                         .multilineTextAlignment(.center)
@@ -411,15 +424,20 @@ struct MusicView: View {
 
     private func search() async {
         let q = query.trimmingCharacters(in: .whitespaces)
-        guard !q.isEmpty, store.hasAnySource else {
+        guard !q.isEmpty else {
             results = DZSearchResult()
             spResults = SPSearchResult()
+            ytResults = []
             return
         }
         try? await Task.sleep(for: .milliseconds(350))
         guard !Task.isCancelled else { return }
         isSearching = true
-        if effectiveSource == .spotify {
+        if effectiveSource == .youtubeMusic {
+            let r = try? await YouTubeMusic.searchSongs(q)
+            guard !Task.isCancelled else { return }
+            ytResults = r ?? []
+        } else if effectiveSource == .spotify {
             let r = try? await Spotify.shared.search(q)
             guard !Task.isCancelled else { return }
             spResults = r ?? SPSearchResult()
@@ -434,21 +452,39 @@ struct MusicView: View {
     private var searchResults: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 18) {
-                if store.user != nil, store.spotifyUser != nil {
-                    Picker("Quelle", selection: $searchSource) {
-                        ForEach(SearchSource.allCases) { Text($0.title).tag($0) }
+                if availableSources.count > 1 {
+                    Picker("Quelle", selection: Binding(get: { effectiveSource }, set: { searchSource = $0 })) {
+                        ForEach(availableSources) { Text($0.title).tag($0) }
                     }
                     .pickerStyle(.segmented)
                 }
-                if effectiveSource == .spotify {
-                    spotifyResults
-                } else {
-                    deezerResults
+                switch effectiveSource {
+                case .youtubeMusic: youtubeMusicResults
+                case .spotify: spotifyResults
+                case .deezer: deezerResults
                 }
             }
             .padding(16)
         }
         .scrollDismissesKeyboard(.immediately)
+    }
+
+    @ViewBuilder private var youtubeMusicResults: some View {
+        if isSearching && ytResults.isEmpty {
+            ProgressView().frame(maxWidth: .infinity).padding(.top, 40)
+        } else if ytResults.isEmpty {
+            ContentUnavailableView.search(text: query)
+        } else {
+            VStack(alignment: .leading, spacing: 4) {
+                Label("YouTube Music", systemImage: "play.circle.fill")
+                    .font(.title3.weight(.bold))
+                    .foregroundStyle(.red)
+                    .padding(.bottom, 4)
+                LazyVStack(spacing: 4) {
+                    ForEach(ytResults) { t in TrackRow(track: t, list: ytResults) }
+                }
+            }
+        }
     }
 
     @ViewBuilder private var spotifyResults: some View {
@@ -842,7 +878,7 @@ struct TrackMenu: View {
                 Button("Als Nächstes", systemImage: "text.line.first.and.arrowtriangle.forward") { music.playNext(track) }
                 Button("Zur Warteschlange", systemImage: "text.badge.plus") { music.addToQueue(track) }
             }
-            if track.isDeezer {
+            if track.isDeezer || track.isYouTube {
                 Button("Mix zu diesem Song", systemImage: "dot.radiowaves.left.and.right") { store.startMix(from: track) }
             }
         }
@@ -872,7 +908,7 @@ struct TrackMenu: View {
                 }
             } else if downloads.isQueued(track.id) {
                 Button("Download abbrechen", systemImage: "xmark.circle") { downloads.cancel(track.id) }
-            } else if !track.isYouTube {
+            } else {
                 Button("Herunterladen", systemImage: "arrow.down.circle") { downloads.download(track) }
             }
         }

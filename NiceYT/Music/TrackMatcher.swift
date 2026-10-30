@@ -55,6 +55,21 @@ actor TrackMatcher {
         if let yt = track.youtubeId { return yt }
         if let cached = youtubeCache[track.id] { return cached }
         let query = "\(track.artist) - \(track.title)"
+        // YouTube Music first: official "song" uploads (no intros, studio audio).
+        if let songs = try? await YouTubeMusic.searchSongs("\(track.artist) \(track.title)") {
+            let song = track.title.lowercased()
+            let artist = track.artist.lowercased()
+            let hit = songs.prefix(8).first { s in
+                let durationOK = track.duration == 0 || s.duration == 0 || abs(s.duration - track.duration) <= 5
+                let titleOK = s.title.lowercased().contains(song) || song.contains(s.title.lowercased())
+                let artistOK = s.artistLine.lowercased().contains(artist) || artist.contains(s.artist.lowercased())
+                return durationOK && titleOK && artistOK
+            }
+            if let id = hit?.youtubeId {
+                youtubeCache[track.id] = id
+                return id
+            }
+        }
         var best: (score: Int, id: String)?
         for q in [query + " audio", query] {
             guard let page = try? await YouTube.search(q, filter: .videos) else { continue }

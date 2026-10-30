@@ -185,7 +185,12 @@ final class MusicStore: ObservableObject {
         Haptics.impact()
         Task {
             do {
-                let tracks = try await Deezer.shared.trackMix(track)
+                let tracks: [DZTrack]
+                if let videoId = track.youtubeId {
+                    tracks = try await YouTubeMusic.radio(videoId)
+                } else {
+                    tracks = try await Deezer.shared.trackMix(track)
+                }
                 MusicPlayer.shared.play(tracks)
                 MusicPlayer.shared.toast("Mix zu „\(track.title)“")
             } catch {

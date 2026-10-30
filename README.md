@@ -24,6 +24,8 @@ Ein nativer, werbefreier YouTube-Client **und Deezer-Musikplayer** für iOS 26+ 
 | 🎵 **Deezer** | Anmeldung per Deezer-Login oder ARL-Cookie, Suche, Alben, Künstler, Playlists, Lieblingssongs, Charts, Flow |
 | 📥 **YouTube-Downloads** | Als Video (MP4, Qualität wählbar, offline im Player) oder nur Audio (M4A mit quadratischem Cover) |
 | 🟢 **Spotify** | Playlists, Lieblingssongs, Alben & Suche aus deinem Spotify-Konto – abgespielt/geladen über Deezer (ISRC) oder YouTube |
+| 🔴 **YouTube Music** | Songs suchen & Radio – ganz ohne Konto; auch Quelle für Spotify-Songs |
+| 🌐 **Downloader & Browser** | Link einfügen oder surfen: Videos, Audio & Dateien (auch versteckte) von TikTok, Instagram, Facebook … finden, laden oder Direktlink kopieren |
 | ⬇️ **Musik-Downloads** | MP3 320 oder FLAC inkl. Cover & Tags, offline hören, in jede App teilen, sichtbar in der Dateien-App |
 | 📳 **Haptik & Long-Press** | Haptisches Feedback bei Likes, Abos, Gesten; langes Drücken öffnet überall weitere Aktionen (auch bei Shorts) |
 | 🪟 **Liquid Glass** | Glas-Tabbar mit Mini-Player als Accessory, Glas-Chips, -Buttons und -Karten |
